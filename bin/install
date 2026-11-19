@@ -1,0 +1,7 @@
+#!/bin/sh
+# Builds and installs the pacman package, so the app shows in the launcher.
+set -eu
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+"$ROOT/bin/build"
+cd "$ROOT/pkgbuild"
+exec makepkg -fsi "$@"

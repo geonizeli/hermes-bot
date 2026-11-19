@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Hermes Bot
+Comment=Chat with Hermes bots on remote Hermes servers
+Exec=hermes-bot
+Icon=hermes-bot
+Terminal=false
+Categories=Network;Chat;
+StartupWMClass=hermes-bot

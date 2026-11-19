@@ -1,0 +1,6 @@
+#!/bin/sh
+# Runs the Rust test suite offscreen.
+set -eu
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+cd "$ROOT"
+QT_QPA_PLATFORM=offscreen QMAKE="${QMAKE:-qmake6}" cargo test "$@"
