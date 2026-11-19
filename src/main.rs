@@ -3,7 +3,7 @@
 mod bridge;
 mod backend;
 
-use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QQuickStyle, QString, QUrl};
+use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QString, QUrl};
 
 fn main() {
     let mut app = QGuiApplication::new();
@@ -14,7 +14,6 @@ fn main() {
     // Matches the window to hermes-bot.desktop, so Hyprland (Wayland app_id)
     // and the launcher pick up the installed icon.
     QGuiApplication::set_desktop_file_name(&QString::from("hermes-bot"));
-    QQuickStyle::set_style(&QString::from("Material"));
 
     let mut engine = QQmlApplicationEngine::new();
     if let Some(engine) = engine.as_mut() {

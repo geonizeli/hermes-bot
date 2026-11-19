@@ -12,7 +12,8 @@ as close as possible to the Grok chat experience.
   a Rust core with a Qt Quick (QML) UI.
 - **Connections:** remote servers over HTTPS, signing in with OAuth or a
   password. The app keeps its own list and does not read Hermes' files.
-- **Look and feel:** as close to Grok as possible.
+- **Look and feel:** default Qt Quick Controls styling for now; function first.
+  The Grok-like look comes later, once everything works.
 - **Setup:** Omarchy on Hyprland, one 4K display at 1.33× scale. Built the
   way Omarchy's own apps are (see the omarchy-app conventions): one binary,
   live theme accent and window rounding, installed as a
