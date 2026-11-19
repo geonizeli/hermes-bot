@@ -314,8 +314,12 @@ mod live {
         }
         let (tx, _rx) = mpsc::unbounded_channel();
         let gateway = Gateway::connect(&server.url, &tokens.access_token, tx).await.unwrap();
+        let mut params = json!({ "profile": profile });
+        if action == "stop" {
+            params["force"] = json!(true);
+        }
         let result = gateway
-            .request(&format!("display.{action}"), json!({ "profile": profile, "force": action == "stop" }))
+            .request(&format!("display.{action}"), params)
             .await
             .unwrap();
         let keys = ["running", "installed", "supported", "geometry", "placement", "blocker", "stopped"];

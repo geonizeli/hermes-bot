@@ -395,24 +395,40 @@ pub async fn run(
 
 /// Inflates one ZRLE rectangle; the zlib stream continues across rectangles.
 fn inflate(inflater: &mut Decompress, input: &[u8]) -> Result<Vec<u8>, Ended> {
-    let mut out = Vec::with_capacity(input.len() * 4 + 1024);
+    inflate_step(inflater, input, 64 * 1024)
+}
+
+/// Keeps calling zlib until it has consumed the whole rectangle AND stopped
+/// producing output: when the buffer fills exactly as the last input byte is
+/// read, the rest of the rectangle is still inside zlib, and stopping on
+/// "input used up" alone truncates it.
+fn inflate_step(inflater: &mut Decompress, input: &[u8], step: usize) -> Result<Vec<u8>, Ended> {
+    let mut out: Vec<u8> = Vec::with_capacity(step.max(input.len() * 4));
     let start_in = inflater.total_in();
     loop {
+        if out.capacity() == out.len() {
+            out.reserve_exact(step.max(out.len() / 2));
+        }
         let consumed = (inflater.total_in() - start_in) as usize;
-        if consumed >= input.len() {
-            break;
-        }
-        if out.capacity() - out.len() < 16 * 1024 {
-            out.reserve(64 * 1024);
-        }
-        let before_out = inflater.total_out();
+        let (before_in, before_out) = (inflater.total_in(), inflater.total_out());
         let status = inflater
-            .decompress_vec(&input[consumed..], &mut out, FlushDecompress::Sync)
+            .decompress_vec(&input[consumed.min(input.len())..], &mut out, FlushDecompress::Sync)
             .map_err(|e| ended(format!("Bad screen data: {e}")))?;
-        let progressed = inflater.total_in() - start_in > consumed as u64 || inflater.total_out() > before_out;
-        if matches!(status, Status::StreamEnd) || !progressed && out.capacity() > out.len() {
+        if matches!(status, Status::StreamEnd) {
             break;
         }
+        let progressed = inflater.total_in() > before_in || inflater.total_out() > before_out;
+        if !progressed {
+            if out.capacity() > out.len() {
+                // Room to write and nothing came out: everything is drained.
+                break;
+            }
+            // Buffer exactly full: grow it and ask again.
+        }
+    }
+    let consumed = (inflater.total_in() - start_in) as usize;
+    if consumed < input.len() {
+        return Err(ended("Bad screen data: compressed data left over."));
     }
     Ok(out)
 }
@@ -425,7 +441,11 @@ struct Cursor<'a> {
 impl Cursor<'_> {
     fn take(&mut self, n: usize) -> Result<&[u8], Ended> {
         if self.pos + n > self.data.len() {
-            return Err(ended("Truncated screen data."));
+            return Err(ended(format!(
+                "Truncated screen data (needed {n} bytes at {} of {}).",
+                self.pos,
+                self.data.len()
+            )));
         }
         let out = &self.data[self.pos..self.pos + n];
         self.pos += n;
@@ -459,6 +479,19 @@ pub fn decode_zrle(data: &[u8], x: u32, y: u32, w: u32, h: u32, frame: &mut Fram
             let (tw, th) = ((w - tx).min(64), (h - ty).min(64));
             let (ox, oy) = (x + tx, y + ty);
             let sub = c.u8()?;
+            let tile = |e: Ended| Ended {
+                code: e.code,
+                reason: format!("{} [ZRLE {w}x{h} rect, tile {tx},{ty} {tw}x{th}, subencoding {sub}]", e.reason),
+            };
+            decode_tile(&mut c, sub, ox, oy, tw, th, frame).map_err(tile)?;
+        }
+    }
+    Ok(())
+}
+
+fn decode_tile(c: &mut Cursor, sub: u8, ox: u32, oy: u32, tw: u32, th: u32, frame: &mut Frame) -> Result<(), Ended> {
+    {
+        {
             match sub {
                 0 => {
                     for j in 0..th {
@@ -635,6 +668,49 @@ mod tests {
         assert_eq!(f.pixels, vec![0xff33_2211, 0xff33_2211, 0xff66_5544, 0xff66_5544]);
     }
 
+    /// A full-screen raw ZRLE update of a gradient: far more output than input.
+    #[test]
+    fn decodes_a_full_screen_compressed_rect() {
+        use flate2::{Compress, Compression, FlushCompress};
+        let (w, h) = (1440u32, 900u32);
+        let mut raw = Vec::new();
+        for ty in (0..h).step_by(64) {
+            for tx in (0..w).step_by(64) {
+                let (tw, th) = ((w - tx).min(64), (h - ty).min(64));
+                raw.push(0u8);
+                for j in 0..th {
+                    for i in 0..tw {
+                        raw.extend_from_slice(&[((tx + i) / 6) as u8, ((ty + j) / 4) as u8, 0x20]);
+                    }
+                }
+            }
+        }
+        let mut deflater = Compress::new(Compression::default(), true);
+        let mut compressed = Vec::with_capacity(raw.len() + 1024);
+        deflater.compress_vec(&raw, &mut compressed, FlushCompress::Sync).unwrap();
+        let mut inflater = Decompress::new(true);
+        let data = inflate(&mut inflater, &compressed).unwrap();
+        assert_eq!(data.len(), raw.len());
+        let mut f = frame(w, h);
+        decode_zrle(&data, 0, 0, w, h, &mut f).unwrap();
+        // CPIXEL bytes are blue, green, red.
+        assert_eq!(f.pixels[(899 * 1440 + 1439) as usize], 0xff00_0000 | (0x20 << 16) | (224 << 8) | 239);
+    }
+
+    #[test]
+    fn inflate_survives_any_buffer_boundary() {
+        use flate2::{Compress, Compression, FlushCompress};
+        let raw: Vec<u8> = (0..400_000u32).map(|i| ((i / 3) % 251) as u8 ^ ((i / 997) as u8)).collect();
+        let mut deflater = Compress::new(Compression::default(), true);
+        let mut compressed = Vec::with_capacity(raw.len() + 1024);
+        deflater.compress_vec(&raw, &mut compressed, FlushCompress::Sync).unwrap();
+        for step in [1usize, 3, 7, 64, 1000, 4096, 65536] {
+            let mut inflater = Decompress::new(true);
+            let out = inflate_step(&mut inflater, &compressed, step).unwrap();
+            assert_eq!(out.len(), raw.len(), "step {step}");
+        }
+    }
+
     #[test]
     fn copies_overlapping_rects() {
         let mut f = frame(3, 3);
@@ -712,5 +788,49 @@ mod tests {
         assert_eq!((f.width, f.height), (2, 1));
         assert_eq!(f.pixels, vec![0xff30_2010, 0xff03_0201]);
         assert!(events.lock().unwrap().iter().any(|e| e.starts_with("Ready")));
+    }
+}
+
+/// Watches a real bot screen (view only) with the saved sign-in and reports
+/// how the session ends: `HERMES_BOT_PROFILE=default cargo test rfb_live -- --ignored --nocapture`.
+#[cfg(test)]
+mod live {
+    use super::*;
+    use crate::backend::{gateway::Gateway, store};
+    use serde_json::{Value, json};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    #[ignore]
+    async fn rfb_live() {
+        let Ok(profile) = std::env::var("HERMES_BOT_PROFILE") else { return };
+        let config = store::load(&store::config_path()).unwrap();
+        let server = config.server(config.active_server.as_deref().unwrap()).unwrap().clone();
+        let mut tokens = store::load_tokens(&server.id).expect("signed in");
+        if tokens.expires_soon() {
+            tokens = crate::backend::auth::refresh(&server.url, &tokens).await.ok().expect("refresh");
+            store::save_tokens(&server.id, &tokens).unwrap();
+        }
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let gateway = Gateway::connect(&server.url, &tokens.access_token, tx).await.unwrap();
+        let observed = gateway.request("display.observe", json!({ "profile": profile })).await.unwrap();
+        let path = observed.get("path").and_then(Value::as_str).unwrap_or("/api/display/ws");
+        let base = server.url.replacen("https://", "wss://", 1).replacen("http://", "ws://", 1);
+        let mut url = url::Url::parse(&format!("{base}{path}")).unwrap();
+        url.query_pairs_mut().append_pair("display_ticket", observed["ticket"].as_str().unwrap());
+
+        let (_input, rx) = mpsc::unbounded_channel();
+        let updates = Arc::new(AtomicUsize::new(0));
+        let counter = updates.clone();
+        let session = run(url.as_str(), Arc::default(), rx, move |e| match e {
+            Event::Updated => {
+                counter.fetch_add(1, Ordering::Relaxed);
+            }
+            other => println!("{other:?}"),
+        });
+        match tokio::time::timeout(std::time::Duration::from_secs(20), session).await {
+            Ok(end) => println!("ENDED after {} updates: {end:?}", updates.load(Ordering::Relaxed)),
+            Err(_) => println!("STILL RUNNING after 20 s, {} updates", updates.load(Ordering::Relaxed)),
+        }
     }
 }
