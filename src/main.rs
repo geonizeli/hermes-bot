@@ -22,7 +22,10 @@ fn main() {
         engine.load(&QUrl::from("qrc:/qt/qml/HermesBot/qml/Main.qml"));
     }
 
-    if let Some(app) = app.as_mut() {
-        std::process::exit(app.exec());
-    }
+    let code = app.as_mut().map(|app| app.exec()).unwrap_or(1);
+    // Tear the QML scene down before exiting so objects can clean up (the
+    // screen viewer hands back control of a bot's screen).
+    drop(engine);
+    drop(app);
+    std::process::exit(code);
 }

@@ -111,7 +111,9 @@ impl cxx_qt::Constructor<()> for qobject::ScreenView {
     }
 
     fn new(_: ()) -> ScreenViewRust {
-        ScreenViewRust { state: QString::from("idle"), ..Default::default() }
+        let mut view = ScreenViewRust::default();
+        view.state = QString::from("idle");
+        view
     }
 }
 
@@ -136,6 +138,26 @@ pub fn viewer_hash(viewer_id: &str) -> String {
 }
 
 extern "C" fn keep_buffer(_: *mut cxx_qt_lib::c_void) {}
+
+impl Drop for ScreenViewRust {
+    /// Quitting while in control must hand the screen back: the server keeps
+    /// a lease across a dropped link, and the bot can't use its computer
+    /// until it does.
+    fn drop(&mut self) {
+        if !self.in_control || self.viewer_id.is_empty() {
+            return;
+        }
+        let Some(session) = session::current() else { return };
+        let params = json!({ "profile": self.profile.to_string(), "viewer_id": self.viewer_id });
+        let _ = runtime().block_on(async {
+            tokio::time::timeout(
+                std::time::Duration::from_millis(1500),
+                session.gateway.request("display.lease.release", params),
+            )
+            .await
+        });
+    }
+}
 
 impl qobject::ScreenView {
     /// The framebuffer's placement inside the item: scaled to fit, centered.

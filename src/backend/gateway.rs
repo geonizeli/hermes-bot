@@ -291,3 +291,36 @@ mod tests {
         assert!(matches!(rx.recv().await.unwrap(), Incoming::Closed(_)));
     }
 }
+
+/// Drives a real server's display methods with the saved sign-in:
+/// `HERMES_BOT_DISPLAY=start|stop|status HERMES_BOT_PROFILE=work cargo test display_live -- --ignored`.
+#[cfg(test)]
+mod live {
+    use super::*;
+    use crate::backend::store;
+
+    #[tokio::test]
+    #[ignore]
+    async fn display_live() {
+        let (Ok(action), Ok(profile)) = (std::env::var("HERMES_BOT_DISPLAY"), std::env::var("HERMES_BOT_PROFILE")) else {
+            return;
+        };
+        let config = store::load(&store::config_path()).unwrap();
+        let server = config.server(config.active_server.as_deref().unwrap()).unwrap().clone();
+        let mut tokens = store::load_tokens(&server.id).expect("signed in");
+        if tokens.expires_soon() {
+            tokens = crate::backend::auth::refresh(&server.url, &tokens).await.ok().expect("refresh");
+            store::save_tokens(&server.id, &tokens).unwrap();
+        }
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let gateway = Gateway::connect(&server.url, &tokens.access_token, tx).await.unwrap();
+        let result = gateway
+            .request(&format!("display.{action}"), json!({ "profile": profile, "force": action == "stop" }))
+            .await
+            .unwrap();
+        let keys = ["running", "installed", "supported", "geometry", "placement", "blocker", "stopped"];
+        let summary: serde_json::Map<String, Value> =
+            keys.iter().filter_map(|k| result.get(*k).map(|v| (k.to_string(), v.clone()))).collect();
+        println!("{}", Value::Object(summary));
+    }
+}
