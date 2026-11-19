@@ -1,4 +1,4 @@
-# Hermes Desktop — requirements and plan
+# Hermes Bot — requirements and plan
 
 A native Omarchy app for chatting with Hermes bots on remote Hermes servers,
 as close as possible to the Grok chat experience.
@@ -15,7 +15,7 @@ as close as possible to the Grok chat experience.
 - **Look and feel:** as close to Grok as possible.
 - **Setup:** Omarchy on Hyprland, one 4K display at 1.33× scale. Built the
   way Omarchy's own apps are (see the omarchy-app conventions): one binary,
-  live theme accent and window rounding, keyboard first, installed as a
+  live theme accent and window rounding, installed as a
   pacman package so it shows in the launcher.
 
 ### Derived from the Hermes source
@@ -40,7 +40,7 @@ as close as possible to the Grok chat experience.
 
 | Area | What it does |
 |---|---|
-| Servers | Add a server by URL; the app probes it and shows its providers. Sign in with OAuth (system browser) or a password (native form). Tokens go to the Secret Service keyring (`keyring` crate); the server list lives in `~/.config/hermes-desktop/servers.json`. |
+| Servers | Add a server by URL; the app probes it and shows its providers. Sign in with OAuth (system browser) or a password (native form). Tokens go to the Secret Service keyring (`keyring` crate); the server list lives in `~/.config/hermes-bot/servers.json`. |
 | Bots | Bot picker for the server's profiles, showing avatar, display name and description. The last bot used is remembered. |
 | Sidebar | Grok-style: new chat, search, history grouped by Today, Yesterday, Previous 7 days and Older, plus rename, delete and pin. Collapsible. |
 | Empty state | Centered greeting and one large rounded composer. |
@@ -48,15 +48,11 @@ as close as possible to the Grok chat experience.
 | Composer | Multi-line input; Enter sends and Shift+Enter adds a newline. Model picker and reasoning-effort pill. Attach images and files through the xdg portal or by pasting. Stop button while streaming. |
 | Agent requests | Approval cards (once / session / always / deny) and clarify questions rendered inline. |
 | Resilience | Heartbeat, auto-reconnect, replay of missed events with `session.events.since`, and clear in-window errors (offline, signed out, server too old). |
-| Omarchy | Live accent and rounding, follows the Omarchy language, HiDPI-crisp. Shortcuts: Ctrl+N new chat, Ctrl+K search, Ctrl+B sidebar, Ctrl+Shift+O bots, Esc stop, Ctrl+Q quit, F1 shortcuts overlay. |
-
-Plain-letter shortcuts from the Omarchy convention (`Q`, `?`, `Space`) are
-mapped to Ctrl/F1 variants, because this is a typing app and those keys
-belong to the composer.
+| Omarchy | Live accent and rounding, follows the Omarchy language, HiDPI-crisp. |
 
 ### Out of scope for v1
 SSH tunnels, local `hermes dashboard`, the web dashboard's admin screens,
-voice.
+voice, custom keyboard shortcuts (revisit later).
 
 ## Architecture
 
@@ -66,7 +62,7 @@ signals and invokables to QML, and Qt's event loop drives the UI while a
 tokio runtime runs the network work and posts results back to the Qt thread.
 
 ```text
-Cargo.toml              one crate, binary `hermes-desktop`
+Cargo.toml              one crate, binary `hermes-bot`
 build.rs                cxx-qt-build: bridges, QML module, i18n resources
 src/main.rs             app setup: QGuiApplication, Material style, desktop file name
 src/bridge/             cxx-qt QObjects handed to QML
@@ -84,7 +80,7 @@ src/core/               plain Rust, no Qt, unit-tested
   transcript.rs         event stream -> turns (text, reasoning, tools) state machine
 qml/                    Main, Sidebar, ChatView, MessageBubble, Composer,
                         ToolChip, ReasoningBlock, ApprovalCard, BotPicker,
-                        ServerDialog, ShortcutsOverlay
+                        ServerDialog
 i18n/<code>.json        catalogs compiled into the binary
 bin/build bin/test bin/install
 pkgbuild/PKGBUILD .desktop .svg
@@ -110,4 +106,4 @@ go through the xdg-desktop-portal (`ashpd` crate).
 5. Streaming conversation view (Markdown, reasoning, tools, stop).
 6. Composer extras: model and effort pickers, attachments.
 7. Approval and clarify cards, reconnect and replay.
-8. Polish: shortcuts overlay, i18n, screenshot, README, `bin/install`.
+8. Polish: i18n, screenshot, README, `bin/install`.
