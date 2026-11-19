@@ -9,6 +9,15 @@ Dialog {
     id: dialog
     modal: true
     closePolicy: Popup.NoAutoClose
+
+    enter: Transition {
+        NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 160; easing.type: Easing.OutCubic }
+        NumberAnimation { property: "scale"; from: 0.96; to: 1; duration: 160; easing.type: Easing.OutCubic }
+    }
+    exit: Transition {
+        NumberAnimation { property: "opacity"; from: 1; to: 0; duration: 120 }
+        NumberAnimation { property: "scale"; from: 1; to: 0.97; duration: 120 }
+    }
     width: Math.min(560, parent ? parent.width - 40 : 560)
 
     property string requestId: ""

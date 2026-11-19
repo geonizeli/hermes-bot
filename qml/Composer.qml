@@ -14,6 +14,8 @@ Rectangle {
     color: Theme.raised
     border.width: 1
     border.color: input.activeFocus ? Qt.alpha(Theme.accent, 0.6) : Theme.border
+    Behavior on border.color { ColorAnimation { duration: 160 } }
+    Behavior on implicitHeight { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
 
     function focusInput() { input.forceActiveFocus() }
 
@@ -72,6 +74,10 @@ Rectangle {
             radius: 18
             color: live ? Theme.accent : Theme.border
             opacity: actionHover.hovered && live ? 0.85 : 1
+            scale: actionTap.pressed && live ? 0.9 : 1
+            Behavior on color { ColorAnimation { duration: 160 } }
+            Behavior on opacity { NumberAnimation { duration: 120 } }
+            Behavior on scale { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
 
             // Arrow up to send, a square to stop.
             Canvas {
@@ -105,6 +111,7 @@ Rectangle {
 
             HoverHandler { id: actionHover; cursorShape: action.live ? Qt.PointingHandCursor : Qt.ArrowCursor }
             TapHandler {
+                id: actionTap
                 enabled: action.live
                 onTapped: HermesApp.streaming ? HermesApp.stop() : composer.send()
             }

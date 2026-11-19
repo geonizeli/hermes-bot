@@ -44,6 +44,29 @@ Rectangle {
             spacing: 2
             ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
+            // The selection glides between bots.
+            currentIndex: sidebar.bots.findIndex(b => b.name === HermesApp.activeBot)
+            highlightFollowsCurrentItem: true
+            highlightMoveDuration: 220
+            highlightMoveVelocity: -1
+            highlightResizeDuration: 0
+            highlight: Item {
+                z: 0
+                Rectangle {
+                    anchors.fill: parent
+                    anchors.leftMargin: 8
+                    anchors.rightMargin: 8
+                    radius: Theme.radius
+                    color: Theme.raised
+                }
+                Rectangle {
+                    x: 8
+                    width: 3
+                    height: parent.height
+                    color: Theme.accent
+                }
+            }
+
             delegate: Item {
                 id: row
                 required property var modelData
@@ -57,14 +80,8 @@ Rectangle {
                     anchors.leftMargin: 8
                     anchors.rightMargin: 8
                     radius: Theme.radius
-                    color: row.active ? Theme.raised : (hover.hovered && !row.locked ? Qt.alpha(Theme.raised, 0.5) : "transparent")
-                }
-                Rectangle {
-                    visible: row.active
-                    x: 8
-                    width: 3
-                    height: parent.height
-                    color: Theme.accent
+                    color: Qt.alpha(Theme.raised, hover.hovered && !row.locked && !row.active ? 0.5 : 0)
+                    Behavior on color { ColorAnimation { duration: 140 } }
                 }
 
                 RowLayout {
@@ -73,6 +90,7 @@ Rectangle {
                     anchors.rightMargin: 16
                     spacing: 12
                     opacity: row.locked ? 0.5 : 1
+                    Behavior on opacity { NumberAnimation { duration: 160 } }
 
                     BotAvatar { name: row.modelData.displayName; size: 38 }
 
@@ -128,7 +146,8 @@ Rectangle {
                 anchors.fill: parent
                 anchors.margins: 8
                 radius: Theme.radius
-                color: serverHover.hovered ? Theme.raised : "transparent"
+                color: Qt.alpha(Theme.raised, serverHover.hovered ? 1 : 0)
+                Behavior on color { ColorAnimation { duration: 140 } }
             }
 
             RowLayout {
@@ -141,6 +160,7 @@ Rectangle {
                     width: 8
                     height: 8
                     radius: 4
+                    Behavior on color { ColorAnimation { duration: 300 } }
                     color: HermesApp.connected ? "#3fb950" : (HermesApp.status.indexOf("Connecting") === 0 || HermesApp.status.indexOf("Reconnecting") === 0 ? "#d29922" : Theme.danger)
                 }
                 ColumnLayout {

@@ -118,7 +118,8 @@ Rectangle {
                     width: 28
                     height: 28
                     radius: Theme.radius
-                    color: btnHover.hovered ? Theme.raised : "transparent"
+                    color: Qt.alpha(Theme.raised, btnHover.hovered ? 1 : 0)
+                    Behavior on color { ColorAnimation { duration: 120 } }
                     Label {
                         anchors.centerIn: parent
                         text: modelData.glyph
@@ -157,6 +158,12 @@ Rectangle {
             bottomMargin: 12
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+            add: Transition {
+                NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 200 }
+            }
+            displaced: Transition {
+                NumberAnimation { property: "y"; duration: 200; easing.type: Easing.OutCubic }
+            }
 
             delegate: Item {
                 id: job
@@ -172,10 +179,14 @@ Rectangle {
                     x: 12
                     width: parent.width - 24
                     height: body.implicitHeight + 24
+                    Behavior on height { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+                    clip: true
                     radius: Theme.radius
                     color: cardHover.hovered || job.expanded ? Theme.raised : Qt.alpha(Theme.raised, 0.45)
+                    Behavior on color { ColorAnimation { duration: 140 } }
                     border.width: 1
-                    border.color: job.expanded ? Theme.border : "transparent"
+                    border.color: job.expanded ? Theme.border : Qt.alpha(Theme.border, 0)
+                    Behavior on border.color { ColorAnimation { duration: 140 } }
                     opacity: job.modelData.paused ? 0.6 : 1
 
                     ColumnLayout {

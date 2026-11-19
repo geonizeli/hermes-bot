@@ -11,6 +11,15 @@ Dialog {
     width: Math.min(560, parent ? parent.width - 40 : 560)
     standardButtons: Dialog.Close
 
+    enter: Transition {
+        NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 160; easing.type: Easing.OutCubic }
+        NumberAnimation { property: "scale"; from: 0.96; to: 1; duration: 160; easing.type: Easing.OutCubic }
+    }
+    exit: Transition {
+        NumberAnimation { property: "opacity"; from: 1; to: 0; duration: 120 }
+        NumberAnimation { property: "scale"; from: 1; to: 0.97; duration: 120 }
+    }
+
     property var servers: []
     // The probed server, as returned by HermesApp.probeServer.
     property var info: null

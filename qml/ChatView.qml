@@ -16,7 +16,13 @@ Item {
     readonly property int panelWidth: 320
     readonly property bool panelDocked: width - panelWidth >= 480
     readonly property bool panelShown: jobsPanel.open && bot !== null
-    readonly property int columnWidth: Math.max(220, Math.min(width - (panelShown && panelDocked ? panelWidth : 0) - 48, 780))
+    // 0 → 1 as the panel slides in; the layout follows it frame by frame.
+    property real panelProgress: panelShown ? 1 : 0
+    Behavior on panelProgress { NumberAnimation { duration: 240; easing.type: Easing.OutCubic } }
+    readonly property real panelSpace: panelDocked ? panelWidth * panelProgress : 0
+    readonly property int columnWidth: Math.max(220, Math.min(width - panelSpace - 48, 780))
+    // New rows animate in; a whole transcript loading at once doesn't.
+    property bool animateAdds: false
 
     // Every row carries every role so the ListModel keeps one schema.
     ListModel { id: messages }
@@ -55,6 +61,8 @@ Item {
     Connections {
         target: HermesApp
         function onTranscriptLoaded(json) {
+            view.animateAdds = false
+            chatFade.restart()
             messages.clear()
             view.assistantRow = -1
             view.thinkingSince = 0
@@ -66,6 +74,7 @@ Item {
             }
             view.scrollToEnd()
             composer.focusInput()
+            Qt.callLater(() => view.animateAdds = true)
         }
         function onUserMessage(text) {
             view.addRow({ role: "user", text: text })
@@ -161,7 +170,9 @@ Item {
                     Layout.preferredHeight: 30
                     Layout.preferredWidth: jobsToggle.implicitWidth + 24
                     radius: Theme.radius
-                    color: jobsPanel.open ? Theme.raised : (toggleHover.hovered ? Qt.alpha(Theme.raised, 0.6) : "transparent")
+                    color: jobsPanel.open ? Theme.raised : (toggleHover.hovered ? Qt.alpha(Theme.raised, 0.6) : Qt.alpha(Theme.raised, 0))
+                    Behavior on color { ColorAnimation { duration: 140 } }
+                    Behavior on border.color { ColorAnimation { duration: 140 } }
                     border.width: 1
                     border.color: jobsPanel.open ? Qt.alpha(Theme.accent, 0.5) : Theme.border
                     Label {
@@ -238,6 +249,21 @@ Item {
             onHeightChanged: if (view.follow) Qt.callLater(positionViewAtEnd)
             onMovementEnded: view.follow = atYEnd
             onFlickEnded: view.follow = atYEnd
+
+            add: Transition {
+                enabled: view.animateAdds
+                NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 220; easing.type: Easing.OutCubic }
+                NumberAnimation { property: "scale"; from: 0.97; to: 1; duration: 220; easing.type: Easing.OutCubic }
+            }
+
+            NumberAnimation on opacity {
+                id: chatFade
+                from: 0
+                to: 1
+                duration: 260
+                easing.type: Easing.OutCubic
+                running: false
+            }
             ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
             delegate: DelegateChooser {
@@ -320,9 +346,13 @@ Item {
                                 TapHandler { onTapped: botRow.showReasoning = !botRow.showReasoning }
                             }
                             Rectangle {
-                                visible: botRow.showReasoning && botRow.reasoning.length > 0
+                                visible: Layout.preferredHeight > 0
                                 Layout.fillWidth: true
-                                Layout.preferredHeight: reasoningText.height
+                                Layout.preferredHeight: botRow.showReasoning && botRow.reasoning.length > 0 ? reasoningText.height : 0
+                                Behavior on Layout.preferredHeight { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+                                clip: true
+                                opacity: botRow.showReasoning ? 1 : 0
+                                Behavior on opacity { NumberAnimation { duration: 200 } }
                                 color: "transparent"
                                 Rectangle { width: 2; height: parent.height; color: Theme.border }
                                 Label {
@@ -362,6 +392,7 @@ Item {
                                 color: copyHover.hovered ? Theme.foreground : Theme.muted
                                 font.pixelSize: 12
                                 opacity: copyHover.hovered || rowHover.hovered ? 1 : 0
+                                Behavior on opacity { NumberAnimation { duration: 150 } }
                                 HoverHandler { id: copyHover; cursorShape: Qt.PointingHandCursor }
                                 TapHandler {
                                     onTapped: {
@@ -401,7 +432,8 @@ Item {
                                 Layout.preferredHeight: 28
                                 Layout.preferredWidth: chipRow.implicitWidth + 20
                                 radius: Theme.radius
-                                color: chipHover.hovered ? Theme.raised : "transparent"
+                                color: chipHover.hovered ? Theme.raised : Qt.alpha(Theme.raised, 0)
+                                Behavior on color { ColorAnimation { duration: 120 } }
                                 border.width: 1
                                 border.color: Theme.border
                                 RowLayout {
@@ -437,7 +469,14 @@ Item {
                                 TapHandler { onTapped: toolRow.expanded = !toolRow.expanded }
                             }
                             Label {
-                                visible: toolRow.expanded && (toolRow.detail.length > 0 || toolRow.summary.length > 0)
+                                id: toolDetails
+                                readonly property bool shown: toolRow.expanded && (toolRow.detail.length > 0 || toolRow.summary.length > 0)
+                                visible: Layout.preferredHeight > 0
+                                Layout.preferredHeight: shown ? implicitHeight : 0
+                                Behavior on Layout.preferredHeight { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+                                clip: true
+                                opacity: shown ? 1 : 0
+                                Behavior on opacity { NumberAnimation { duration: 200 } }
                                 Layout.fillWidth: true
                                 text: [toolRow.detail, toolRow.summary].filter(s => s.length > 0).join("\n\n")
                                 color: Theme.muted
@@ -527,11 +566,16 @@ Item {
 
         // Errors stay until dismissed or the next action clears them.
         Rectangle {
-            visible: HermesApp.error.length > 0
+            readonly property bool shown: HermesApp.error.length > 0
+            visible: Layout.preferredHeight > 0.5
             Layout.alignment: Qt.AlignHCenter
             Layout.preferredWidth: view.columnWidth
-            Layout.preferredHeight: errorText.implicitHeight + 20
-            Layout.bottomMargin: 8
+            Layout.preferredHeight: shown ? errorText.implicitHeight + 20 : 0
+            Behavior on Layout.preferredHeight { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+            opacity: shown ? 1 : 0
+            Behavior on opacity { NumberAnimation { duration: 200 } }
+            clip: true
+            Layout.bottomMargin: shown ? 8 : 0
             radius: Theme.radius
             color: Qt.alpha(Theme.danger, 0.12)
             border.width: 1
@@ -573,19 +617,19 @@ Item {
         // Holds the docked panel's place.
         Item {
             Layout.fillHeight: true
-            Layout.preferredWidth: view.panelShown && view.panelDocked ? view.panelWidth : 0
+            Layout.preferredWidth: view.panelSpace
         }
         }
     }
 
     JobsPanel {
         id: jobsPanel
-        anchors.right: parent.right
+        x: view.width - width * view.panelProgress
         anchors.top: parent.top
         anchors.topMargin: 56
         anchors.bottom: parent.bottom
         width: view.panelDocked ? view.panelWidth : Math.min(view.panelWidth, view.width - 40)
-        visible: view.panelShown
+        visible: view.panelProgress > 0.001 && view.bot !== null
 
         // Floating over the chat: a shadow edge so it reads as a layer.
         Rectangle {
