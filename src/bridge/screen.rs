@@ -357,13 +357,14 @@ impl qobject::ScreenView {
             self.as_mut().set_message(q("The screen isn't connected yet."));
             return;
         }
-        let profile = self.profile().to_string();
+        let mut params = json!({ "profile": self.profile().to_string(), "viewer_id": viewer_id });
+        // Only acquire takes a reason; release rejects unknown fields.
+        if method == "display.lease.acquire" {
+            params["reason"] = json!("Taken from Hermes Bot");
+        }
         let qt = self.qt_thread();
         runtime().spawn(async move {
-            let result = session
-                .gateway
-                .request(method, json!({ "profile": profile, "viewer_id": viewer_id, "reason": "Taken from Hermes Bot" }))
-                .await;
+            let result = session.gateway.request(method, params).await;
             let _ = qt.queue(move |mut view| match result {
                 Ok(reply) => {
                     if let Some(lease) = reply.get("lease").cloned() {

@@ -265,7 +265,9 @@ Rectangle {
                     PanelButton {
                         text: "Stop"
                         busy: HermesApp.screenBusy
-                        onClicked: HermesApp.stopScreen(false)
+                        // The server refuses a stop while a human holds the screen; when
+                        // that human is us, stopping is our call to make.
+                        onClicked: HermesApp.stopScreen(screen.inControl)
                     }
                 }
             }
