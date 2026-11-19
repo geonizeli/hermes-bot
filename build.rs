@@ -6,6 +6,7 @@ fn main() {
         "qml/BotAvatar.qml",
         "qml/ChatView.qml",
         "qml/Composer.qml",
+        "qml/JobsPanel.qml",
         "qml/Sidebar.qml",
         "qml/SetupDialog.qml",
         "qml/RequestDialog.qml",

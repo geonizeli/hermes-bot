@@ -10,6 +10,8 @@ fn main() {
     if let Some(mut app) = app.as_mut() {
         app.as_mut().set_application_name(&QString::from("hermes-bot"));
         app.as_mut().set_application_version(&QString::from(env!("CARGO_PKG_VERSION")));
+        // QSettings (QML Settings) keeps UI state in ~/.config/hermes-bot/.
+        app.as_mut().set_organization_name(&QString::from("hermes-bot"));
     }
     // Matches the window to hermes-bot.desktop, so Hyprland (Wayland app_id)
     // and the launcher pick up the installed icon.

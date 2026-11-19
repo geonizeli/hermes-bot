@@ -11,7 +11,12 @@ Item {
     property var bot: null
     readonly property string botName: bot ? bot.displayName : "the bot"
     readonly property bool empty: messages.count === 0
-    readonly property int columnWidth: Math.min(width - 48, 780)
+    // The jobs panel docks beside the chat when there's room, and slides over
+    // it in a narrow window rather than squeezing the conversation.
+    readonly property int panelWidth: 320
+    readonly property bool panelDocked: width - panelWidth >= 480
+    readonly property bool panelShown: jobsPanel.open && bot !== null
+    readonly property int columnWidth: Math.max(220, Math.min(width - (panelShown && panelDocked ? panelWidth : 0) - 48, 780))
 
     // Every row carries every role so the ListModel keeps one schema.
     ListModel { id: messages }
@@ -128,7 +133,7 @@ Item {
         Item {
             Layout.fillWidth: true
             Layout.preferredHeight: 56
-            visible: view.bot !== null && !view.empty
+            visible: view.bot !== null
 
             RowLayout {
                 anchors.fill: parent
@@ -149,9 +154,40 @@ Item {
                     font.pixelSize: 13
                     elide: Text.ElideRight
                 }
+
+                // Toggles the scheduled jobs panel.
+                Rectangle {
+                    readonly property int count: jobsPanel.jobs.length
+                    Layout.preferredHeight: 30
+                    Layout.preferredWidth: jobsToggle.implicitWidth + 24
+                    radius: Theme.radius
+                    color: jobsPanel.open ? Theme.raised : (toggleHover.hovered ? Qt.alpha(Theme.raised, 0.6) : "transparent")
+                    border.width: 1
+                    border.color: jobsPanel.open ? Qt.alpha(Theme.accent, 0.5) : Theme.border
+                    Label {
+                        id: jobsToggle
+                        anchors.centerIn: parent
+                        text: "Scheduled" + (parent.count > 0 ? "  " + parent.count : "")
+                        color: jobsPanel.open ? Theme.foreground : Theme.muted
+                        font.pixelSize: 13
+                    }
+                    HoverHandler { id: toggleHover; cursorShape: Qt.PointingHandCursor }
+                    TapHandler { onTapped: jobsPanel.open = !jobsPanel.open }
+                }
             }
             Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.border }
         }
+
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            spacing: 0
+
+        ColumnLayout {
+            id: chatArea
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            spacing: 0
 
         Item { Layout.fillHeight: true; visible: view.empty }
 
@@ -532,6 +568,37 @@ Item {
         }
 
         Item { Layout.fillHeight: true; visible: view.empty }
+        }
+
+        // Holds the docked panel's place.
+        Item {
+            Layout.fillHeight: true
+            Layout.preferredWidth: view.panelShown && view.panelDocked ? view.panelWidth : 0
+        }
+        }
+    }
+
+    JobsPanel {
+        id: jobsPanel
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.topMargin: 56
+        anchors.bottom: parent.bottom
+        width: view.panelDocked ? view.panelWidth : Math.min(view.panelWidth, view.width - 40)
+        visible: view.panelShown
+
+        // Floating over the chat: a shadow edge so it reads as a layer.
+        Rectangle {
+            visible: !view.panelDocked
+            anchors.right: parent.left
+            width: 12
+            height: parent.height
+            gradient: Gradient {
+                orientation: Gradient.Horizontal
+                GradientStop { position: 0; color: "transparent" }
+                GradientStop { position: 1; color: Qt.alpha("black", 0.35) }
+            }
+        }
     }
 
     // Copying goes through a hidden editor; QML has no clipboard API.

@@ -26,6 +26,10 @@ pub mod qobject {
         #[qproperty(QString, active_bot, cxx_name = "activeBot")]
         #[qproperty(QString, active_session, cxx_name = "activeSession")]
         #[qproperty(bool, streaming)]
+        /// JSON array of the active bot's scheduled jobs.
+        #[qproperty(QString, jobs)]
+        #[qproperty(bool, jobs_loading, cxx_name = "jobsLoading")]
+        #[qproperty(QString, jobs_error, cxx_name = "jobsError")]
         type HermesApp = super::AppRust;
 
         #[qinvokable]
@@ -52,6 +56,8 @@ pub mod qobject {
         fn send(self: Pin<&mut HermesApp>, text: QString);
         #[qinvokable]
         fn stop(self: Pin<&mut HermesApp>);
+        #[qinvokable]
+        fn refresh_jobs(self: Pin<&mut HermesApp>);
         #[qinvokable]
         fn answer_request(self: Pin<&mut HermesApp>, id: QString, result: QString);
 
@@ -98,6 +104,7 @@ use tokio::sync::mpsc;
 
 use crate::backend::auth::{self, RefreshError};
 use crate::backend::botchat::{self, Opened};
+use crate::backend::cron;
 use crate::backend::gateway::{Gateway, Incoming, UNAUTHORIZED};
 use crate::backend::runtime;
 use crate::backend::store::{self, Config, Server, Tokens};
@@ -114,6 +121,9 @@ pub struct AppRust {
     active_bot: QString,
     active_session: QString,
     streaming: bool,
+    jobs: QString,
+    jobs_loading: bool,
+    jobs_error: QString,
 
     config: Config,
     gateway: Option<Arc<Gateway>>,
@@ -206,6 +216,8 @@ impl qobject::HermesApp {
         self.as_mut().set_connected(false);
         self.as_mut().set_streaming(false);
         self.as_mut().set_bots(q("[]"));
+        self.as_mut().set_jobs(q("[]"));
+        self.as_mut().set_jobs_error(q(""));
         self.as_mut().set_active_session(q(""));
         self.as_mut().transcript_loaded(q("[]"));
     }
@@ -557,6 +569,9 @@ impl qobject::HermesApp {
             return;
         }
         self.as_mut().clear_chat();
+        self.as_mut().set_jobs(q("[]"));
+        self.as_mut().set_jobs_error(q(""));
+        self.as_mut().refresh_jobs();
         let Some(gateway) = self.rust().gateway.clone() else { return };
         let profile = self.active_bot().to_string();
         let roster = self.rust().roster_chats.get(&profile).cloned();
@@ -651,6 +666,43 @@ impl qobject::HermesApp {
         self.call("session.interrupt", json!({ "session_id": live, "profile": profile }), |_, _| {});
     }
 
+    /// Reloads the active bot's scheduled jobs. Failures stay in `jobsError`
+    /// so the chat's own error bar isn't taken over by a background poll.
+    pub fn refresh_jobs(mut self: Pin<&mut Self>) {
+        let Some(gateway) = self.rust().gateway.clone() else { return };
+        if self.rust().jobs_loading {
+            return;
+        }
+        let profile = self.active_bot().to_string();
+        if profile.is_empty() {
+            return;
+        }
+        self.as_mut().set_jobs_loading(true);
+        let generation = self.rust().generation;
+        let qt = self.qt_thread();
+        runtime().spawn(async move {
+            let result = gateway
+                .request("cron.manage", json!({ "action": "list", "include_disabled": true, "profile": profile }))
+                .await;
+            let _ = qt.queue(move |mut app| {
+                app.as_mut().set_jobs_loading(false);
+                if app.rust().generation != generation || app.active_bot().to_string() != profile {
+                    return;
+                }
+                match result {
+                    Ok(reply) => match reply.get("error").and_then(Value::as_str).filter(|e| !e.is_empty()) {
+                        Some(e) => app.as_mut().set_jobs_error(q(e)),
+                        None => {
+                            app.as_mut().set_jobs_error(q(""));
+                            app.as_mut().set_jobs(q(Value::Array(cron::jobs_for_bot(&reply, &profile)).to_string()));
+                        }
+                    },
+                    Err(e) => app.as_mut().set_jobs_error(q(e)),
+                }
+            });
+        });
+    }
+
     pub fn answer_request(self: Pin<&mut Self>, id: QString, result: QString) {
         let (Ok(id), Ok(result)) = (
             serde_json::from_str::<Value>(&id.to_string()),
@@ -729,6 +781,7 @@ async fn refresh_tokens(server: &Server, tokens: &Tokens) -> Result<Tokens, Stri
 impl cxx_qt::Initialize for qobject::HermesApp {
     fn initialize(mut self: Pin<&mut Self>) {
         self.as_mut().set_bots(q("[]"));
+        self.as_mut().set_jobs(q("[]"));
         match store::load(&store::config_path()) {
             Ok(config) => self.as_mut().rust_mut().config = config,
             Err(e) => self.as_mut().set_error(q(e)),
