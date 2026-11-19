@@ -15,7 +15,7 @@ Item {
     // it in a narrow window rather than squeezing the conversation.
     readonly property int panelWidth: 320
     readonly property bool panelDocked: width - panelWidth >= 480
-    readonly property bool panelShown: jobsPanel.open && bot !== null
+    readonly property bool panelShown: sidePanel.open && bot !== null
     // 0 → 1 as the panel slides in; the layout follows it frame by frame.
     property real panelProgress: panelShown ? 1 : 0
     Behavior on panelProgress { NumberAnimation { duration: 240; easing.type: Easing.OutCubic } }
@@ -164,26 +164,34 @@ Item {
                     elide: Text.ElideRight
                 }
 
-                // Toggles the scheduled jobs panel.
-                Rectangle {
-                    readonly property int count: jobsPanel.jobs.length
-                    Layout.preferredHeight: 30
-                    Layout.preferredWidth: jobsToggle.implicitWidth + 24
-                    radius: Theme.radius
-                    color: jobsPanel.open ? Theme.raised : (toggleHover.hovered ? Qt.alpha(Theme.raised, 0.6) : Qt.alpha(Theme.raised, 0))
-                    Behavior on color { ColorAnimation { duration: 140 } }
-                    Behavior on border.color { ColorAnimation { duration: 140 } }
-                    border.width: 1
-                    border.color: jobsPanel.open ? Qt.alpha(Theme.accent, 0.5) : Theme.border
-                    Label {
-                        id: jobsToggle
-                        anchors.centerIn: parent
-                        text: "Scheduled" + (parent.count > 0 ? "  " + parent.count : "")
-                        color: jobsPanel.open ? Theme.foreground : Theme.muted
-                        font.pixelSize: 13
+                // Side panel toggles.
+                Repeater {
+                    model: [
+                        { tab: "jobs", label: "Scheduled", count: sidePanel.jobs.length },
+                        { tab: "screen", label: "Screen", count: 0 }
+                    ]
+                    delegate: Rectangle {
+                        id: toggle
+                        required property var modelData
+                        readonly property bool on: sidePanel.open && sidePanel.tab === modelData.tab
+                        Layout.preferredHeight: 30
+                        Layout.preferredWidth: toggleLabel.implicitWidth + 24
+                        radius: Theme.radius
+                        color: on ? Theme.raised : (toggleHover.hovered ? Qt.alpha(Theme.raised, 0.6) : Qt.alpha(Theme.raised, 0))
+                        Behavior on color { ColorAnimation { duration: 140 } }
+                        border.width: 1
+                        border.color: on ? Qt.alpha(Theme.accent, 0.5) : Theme.border
+                        Behavior on border.color { ColorAnimation { duration: 140 } }
+                        Label {
+                            id: toggleLabel
+                            anchors.centerIn: parent
+                            text: toggle.modelData.label + (toggle.modelData.count > 0 ? "  " + toggle.modelData.count : "")
+                            color: toggle.on ? Theme.foreground : Theme.muted
+                            font.pixelSize: 13
+                        }
+                        HoverHandler { id: toggleHover; cursorShape: Qt.PointingHandCursor }
+                        TapHandler { onTapped: sidePanel.show(toggle.modelData.tab) }
                     }
-                    HoverHandler { id: toggleHover; cursorShape: Qt.PointingHandCursor }
-                    TapHandler { onTapped: jobsPanel.open = !jobsPanel.open }
                 }
             }
             Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.border }
@@ -639,8 +647,46 @@ Item {
         }
     }
 
-    JobsPanel {
-        id: jobsPanel
+    // The bot's screen, expanded over the conversation.
+    Rectangle {
+        id: expandedScreen
+        x: 0
+        y: 56
+        width: view.width - view.panelSpace
+        height: view.height - 56
+        color: "black"
+        visible: opacity > 0
+        opacity: sidePanel.screenExpanded ? 1 : 0
+        Behavior on opacity { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+        z: 5
+
+        Rectangle {
+            anchors.top: parent.top
+            anchors.right: parent.right
+            anchors.margins: 12
+            z: 10
+            width: collapseLabel.implicitWidth + 24
+            height: 30
+            radius: Theme.radius
+            color: Qt.alpha(Theme.surface, collapseHover.hovered ? 0.95 : 0.75)
+            border.width: 1
+            border.color: Theme.border
+            Label {
+                id: collapseLabel
+                anchors.centerIn: parent
+                text: "Collapse screen"
+                color: Theme.foreground
+                font.pixelSize: 13
+            }
+            HoverHandler { id: collapseHover; cursorShape: Qt.PointingHandCursor }
+            TapHandler { onTapped: sidePanel.screenExpanded = false }
+        }
+    }
+
+    SidePanel {
+        id: sidePanel
+        expandedHost: expandedScreen
+        z: 6
         x: view.width - width * view.panelProgress
         anchors.top: parent.top
         anchors.topMargin: 56

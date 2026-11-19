@@ -7,12 +7,14 @@ fn main() {
         "qml/ChatView.qml",
         "qml/Composer.qml",
         "qml/JobsPanel.qml",
+        "qml/ScreenPanel.qml",
+        "qml/SidePanel.qml",
         "qml/Sidebar.qml",
         "qml/SetupDialog.qml",
         "qml/RequestDialog.qml",
     ]))
     .qt_module("Quick")
     .qt_module("QuickControls2")
-    .files(["src/bridge/theme.rs", "src/bridge/app.rs"])
+    .files(["src/bridge/theme.rs", "src/bridge/app.rs", "src/bridge/screen.rs"])
     .build();
 }

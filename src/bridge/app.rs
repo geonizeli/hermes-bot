@@ -32,6 +32,12 @@ pub mod qobject {
         #[qproperty(QString, jobs)]
         #[qproperty(bool, jobs_loading, cxx_name = "jobsLoading")]
         #[qproperty(QString, jobs_error, cxx_name = "jobsError")]
+        /// JSON `DisplayStatus` of the active bot's screen ("" while unknown;
+        /// `{"unavailable": true}` when the server has no screens).
+        #[qproperty(QString, screen)]
+        #[qproperty(bool, screen_busy, cxx_name = "screenBusy")]
+        /// Output of a running screen install.
+        #[qproperty(QString, screen_log, cxx_name = "screenLog")]
         type HermesApp = super::AppRust;
 
         #[qinvokable]
@@ -60,6 +66,14 @@ pub mod qobject {
         fn stop(self: Pin<&mut HermesApp>);
         #[qinvokable]
         fn refresh_jobs(self: Pin<&mut HermesApp>);
+        #[qinvokable]
+        fn refresh_screen(self: Pin<&mut HermesApp>);
+        #[qinvokable]
+        fn start_screen(self: Pin<&mut HermesApp>);
+        #[qinvokable]
+        fn stop_screen(self: Pin<&mut HermesApp>, force: bool);
+        #[qinvokable]
+        fn install_screen(self: Pin<&mut HermesApp>);
         #[qinvokable]
         fn answer_request(self: Pin<&mut HermesApp>, id: QString, result: QString);
 
@@ -108,7 +122,7 @@ use crate::backend::auth::{self, RefreshError};
 use crate::backend::botchat::{self, Opened};
 use crate::backend::cron;
 use crate::backend::gateway::{Gateway, Incoming, UNAUTHORIZED};
-use crate::backend::runtime;
+use crate::backend::{runtime, session};
 use crate::backend::store::{self, Config, Server, Tokens};
 
 #[derive(Default)]
@@ -127,6 +141,9 @@ pub struct AppRust {
     jobs: QString,
     jobs_loading: bool,
     jobs_error: QString,
+    screen: QString,
+    screen_busy: bool,
+    screen_log: QString,
 
     config: Config,
     gateway: Option<Arc<Gateway>>,
@@ -214,6 +231,7 @@ impl qobject::HermesApp {
         if let Some(gateway) = rust.gateway.take() {
             gateway.close();
         }
+        session::set(None);
         rust.live_session.clear();
         rust.roster_chats.clear();
         self.as_mut().set_connected(false);
@@ -222,6 +240,8 @@ impl qobject::HermesApp {
         self.as_mut().set_bots(q("[]"));
         self.as_mut().set_jobs(q("[]"));
         self.as_mut().set_jobs_error(q(""));
+        self.as_mut().set_screen(q(""));
+        self.as_mut().set_screen_log(q(""));
         self.as_mut().set_active_session(q(""));
         self.as_mut().transcript_loaded(q("[]"));
     }
@@ -254,6 +274,7 @@ impl qobject::HermesApp {
                 }
                 match result {
                     Ok(gateway) => {
+                        session::set(Some(session::Session { gateway: gateway.clone(), base_url: server.url.clone() }));
                         app.as_mut().rust_mut().gateway = Some(gateway);
                         app.as_mut().set_connected(true);
                         app.as_mut().set_error(q(""));
@@ -346,6 +367,10 @@ impl qobject::HermesApp {
             Incoming::Event { kind, session_id, payload } => {
                 let ours = session_id.is_empty() || session_id == self.rust().live_session;
                 let text = |key: &str| payload.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
+                if kind.starts_with("display.") {
+                    self.as_mut().handle_display_event(&kind, &payload);
+                    return;
+                }
                 match kind.as_str() {
                     _ if !ours => {}
                     "message.start" => self.as_mut().assistant_started(),
@@ -390,6 +415,7 @@ impl qobject::HermesApp {
             }
             Incoming::Closed(reason) => {
                 self.as_mut().rust_mut().gateway = None;
+                session::set(None);
                 self.as_mut().set_connected(false);
                 self.as_mut().set_streaming(false);
                 if reason == UNAUTHORIZED {
@@ -582,6 +608,9 @@ impl qobject::HermesApp {
         self.as_mut().set_jobs(q("[]"));
         self.as_mut().set_jobs_error(q(""));
         self.as_mut().refresh_jobs();
+        self.as_mut().set_screen(q(""));
+        self.as_mut().set_screen_log(q(""));
+        self.as_mut().refresh_screen();
         let Some(gateway) = self.rust().gateway.clone() else {
             self.as_mut().set_chat_loading(false);
             return;
@@ -716,6 +745,121 @@ impl qobject::HermesApp {
                 }
             });
         });
+    }
+
+    /// The active bot's screen identity in display events.
+    fn screen_key(&self) -> String {
+        serde_json::from_str::<Value>(&self.screen().to_string())
+            .ok()
+            .and_then(|s| s.get("profile_key").and_then(Value::as_str).map(str::to_string))
+            .unwrap_or_default()
+    }
+
+    fn handle_display_event(mut self: Pin<&mut Self>, kind: &str, payload: &Value) {
+        let key = payload.get("profile_key").and_then(Value::as_str).unwrap_or_default();
+        let profile = payload.get("profile").and_then(Value::as_str).unwrap_or_default();
+        let ours = (!key.is_empty() && key == self.screen_key())
+            || (!profile.is_empty() && profile == self.active_bot().to_string());
+        if !ours {
+            return;
+        }
+        match kind {
+            "display.status" => self.as_mut().set_screen(q(payload.to_string())),
+            "display.lease" => {
+                if let Ok(mut status) = serde_json::from_str::<Value>(&self.screen().to_string()) {
+                    status["lease"] = payload.get("lease").cloned().unwrap_or(Value::Null);
+                    self.as_mut().set_screen(q(status.to_string()));
+                }
+            }
+            "display.install.log" => {
+                let line = payload.get("line").and_then(Value::as_str).unwrap_or_default();
+                let mut log = self.screen_log().to_string();
+                log.push_str(line);
+                log.push('\n');
+                // Keep the tail; installs can be chatty.
+                if log.len() > 20_000 {
+                    log = log[log.len() - 20_000..].to_string();
+                }
+                self.as_mut().set_screen_log(q(log));
+            }
+            "display.install.done" => {
+                self.as_mut().set_screen_busy(false);
+                if let Some(status) = payload.get("status").filter(|s| s.is_object()) {
+                    self.as_mut().set_screen(q(status.to_string()));
+                }
+                let code = payload.get("code").and_then(Value::as_i64).unwrap_or(1);
+                let note = match code {
+                    0 => "Installed.",
+                    -1 => "Install cancelled.",
+                    -2 => "No sudo access: run the command above on the server.",
+                    _ => "Install failed; see the log above.",
+                };
+                let log = format!("{}{note}\n", self.screen_log());
+                self.as_mut().set_screen_log(q(log));
+            }
+            _ => {}
+        }
+    }
+
+    /// Runs a display RPC for the active bot and stores the status it returns.
+    fn display_call(mut self: Pin<&mut Self>, method: &'static str, extra: Value) {
+        let Some(gateway) = self.rust().gateway.clone() else { return };
+        let profile = self.active_bot().to_string();
+        if profile.is_empty() {
+            return;
+        }
+        let mut params = json!({ "profile": profile });
+        if let (Some(p), Some(e)) = (params.as_object_mut(), extra.as_object()) {
+            p.extend(e.clone());
+        }
+        self.as_mut().set_screen_busy(true);
+        let generation = self.rust().generation;
+        let qt = self.qt_thread();
+        runtime().spawn(async move {
+            let result = gateway.request(method, params).await;
+            let _ = qt.queue(move |mut app| {
+                if app.rust().generation != generation || app.active_bot().to_string() != profile {
+                    return;
+                }
+                match result {
+                    Ok(status) => {
+                        // display.install answers {started}; its status arrives with install.done.
+                        if method == "display.install" {
+                            return;
+                        }
+                        app.as_mut().set_screen_busy(false);
+                        app.as_mut().set_screen(q(status.to_string()));
+                    }
+                    Err(e) => {
+                        app.as_mut().set_screen_busy(false);
+                        if e.to_lowercase().contains("method not found") || e.contains("Unknown method") {
+                            app.as_mut().set_screen(q(r#"{"unavailable":true}"#));
+                        } else if method == "display.status" {
+                            app.as_mut().set_screen(q(json!({ "error": e }).to_string()));
+                        } else {
+                            app.as_mut().set_error(q(e));
+                        }
+                    }
+                }
+            });
+        });
+    }
+
+    pub fn refresh_screen(self: Pin<&mut Self>) {
+        self.display_call("display.status", json!({}));
+    }
+
+    pub fn start_screen(self: Pin<&mut Self>) {
+        self.display_call("display.start", json!({}));
+    }
+
+    pub fn stop_screen(self: Pin<&mut Self>, force: bool) {
+        self.display_call("display.stop", json!({ "force": force }));
+    }
+
+    pub fn install_screen(mut self: Pin<&mut Self>) {
+        self.as_mut().set_screen_log(q(""));
+        self.display_call("display.install", json!({}));
     }
 
     pub fn answer_request(self: Pin<&mut Self>, id: QString, result: QString) {

@@ -1,4 +1,3 @@
-import QtCore
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -10,14 +9,8 @@ Rectangle {
     id: panel
     color: Theme.surface
 
-    property alias open: settings.jobsPanelOpen
     readonly property var jobs: JSON.parse(HermesApp.jobs || "[]")
-
-    Settings {
-        id: settings
-        category: "chat"
-        property bool jobsPanelOpen: true
-    }
+    signal closeRequested()
 
     // The list goes stale as jobs run; poll while the panel is showing.
     Timer {
@@ -81,11 +74,8 @@ Rectangle {
                   blocked_config: "Blocked by configuration" })[status] || status
     }
 
-    Rectangle { width: 1; height: parent.height; color: Theme.border }
-
     ColumnLayout {
         anchors.fill: parent
-        anchors.leftMargin: 1
         spacing: 0
 
         RowLayout {
@@ -111,7 +101,7 @@ Rectangle {
             Repeater {
                 model: [
                     { glyph: "↻", tip: "Refresh", act: () => HermesApp.refreshJobs() },
-                    { glyph: "✕", tip: "Hide", act: () => panel.open = false }
+                    { glyph: "✕", tip: "Hide", act: () => panel.closeRequested() }
                 ]
                 delegate: Rectangle {
                     required property var modelData
