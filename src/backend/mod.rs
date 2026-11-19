@@ -2,6 +2,7 @@ pub mod auth;
 pub mod botchat;
 pub mod cron;
 pub mod gateway;
+pub mod rfb;
 pub mod store;
 pub mod theme;
 
