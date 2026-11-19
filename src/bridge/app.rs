@@ -24,7 +24,6 @@ pub mod qobject {
         #[qproperty(bool, connected)]
         #[qproperty(QString, bots)]
         #[qproperty(QString, active_bot, cxx_name = "activeBot")]
-        #[qproperty(QString, sessions)]
         #[qproperty(QString, active_session, cxx_name = "activeSession")]
         #[qproperty(bool, streaming)]
         type HermesApp = super::AppRust;
@@ -50,7 +49,7 @@ pub mod qobject {
         #[qinvokable]
         fn select_bot(self: Pin<&mut HermesApp>, name: QString);
         #[qinvokable]
-        fn refresh_sessions(self: Pin<&mut HermesApp>);
+        fn open_latest_chat(self: Pin<&mut HermesApp>);
         #[qinvokable]
         fn new_chat(self: Pin<&mut HermesApp>);
         #[qinvokable]
@@ -117,7 +116,6 @@ pub struct AppRust {
     connected: bool,
     bots: QString,
     active_bot: QString,
-    sessions: QString,
     active_session: QString,
     streaming: bool,
 
@@ -208,7 +206,6 @@ impl qobject::HermesApp {
         self.as_mut().set_connected(false);
         self.as_mut().set_streaming(false);
         self.as_mut().set_bots(q("[]"));
-        self.as_mut().set_sessions(q("[]"));
         self.as_mut().set_active_session(q(""));
         self.as_mut().transcript_loaded(q("[]"));
     }
@@ -310,8 +307,7 @@ impl qobject::HermesApp {
                 .unwrap_or_else(|| "default".into());
             app.as_mut().set_bots(q(Value::Array(bots).to_string()));
             app.as_mut().set_active_bot(q(&pick));
-            app.as_mut().new_chat();
-            app.as_mut().refresh_sessions();
+            app.as_mut().open_latest_chat();
         });
     }
 
@@ -324,7 +320,6 @@ impl qobject::HermesApp {
                 let ours = session_id.is_empty() || session_id == self.rust().live_session;
                 let text = |key: &str| payload.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
                 match kind.as_str() {
-                    "sessions.changed" | "session.title" => self.as_mut().refresh_sessions(),
                     _ if !ours => {}
                     "message.start" => self.as_mut().assistant_started(),
                     "message.delta" => {
@@ -515,29 +510,30 @@ impl qobject::HermesApp {
             self.as_mut().save_config();
         }
         self.as_mut().set_active_bot(q(&name));
-        self.as_mut().new_chat();
-        self.as_mut().refresh_sessions();
+        self.as_mut().open_latest_chat();
     }
 
-    pub fn refresh_sessions(self: Pin<&mut Self>) {
+    /// Opens the bot's most recent conversation, or an empty one if it has none.
+    pub fn open_latest_chat(mut self: Pin<&mut Self>) {
+        if self.rust().streaming {
+            return;
+        }
+        self.as_mut().new_chat();
         let profile = self.active_bot().to_string();
-        self.call("session.list", json!({ "limit": 100, "profile": profile }), |mut app, result| {
-            let sessions: Vec<Value> = result
+        self.call("session.list", json!({ "limit": 1, "profile": profile.clone() }), move |mut app, result| {
+            if app.active_bot().to_string() != profile {
+                return;
+            }
+            let latest = result
                 .get("sessions")
                 .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default()
-                .iter()
-                .map(|s| {
-                    let text = |key: &str| s.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
-                    let title = Some(text("title"))
-                        .filter(|t| !t.is_empty())
-                        .or_else(|| Some(text("preview")).filter(|t| !t.is_empty()))
-                        .unwrap_or_else(|| "Untitled chat".into());
-                    json!({ "id": text("id"), "title": title, "startedAt": s.get("started_at").cloned().unwrap_or(Value::Null) })
-                })
-                .collect();
-            app.as_mut().set_sessions(q(Value::Array(sessions).to_string()));
+                .and_then(|list| list.first())
+                .and_then(|s| s.get("id"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            if let Some(id) = latest {
+                app.as_mut().open_session(q(id));
+            }
         });
     }
 
@@ -711,7 +707,6 @@ async fn refresh_tokens(server: &Server, tokens: &Tokens) -> Result<Tokens, Stri
 impl cxx_qt::Initialize for qobject::HermesApp {
     fn initialize(mut self: Pin<&mut Self>) {
         self.as_mut().set_bots(q("[]"));
-        self.as_mut().set_sessions(q("[]"));
         match store::load(&store::config_path()) {
             Ok(config) => self.as_mut().rust_mut().config = config,
             Err(e) => self.as_mut().set_error(q(e)),

@@ -14,7 +14,8 @@ ApplicationWindow {
 
     readonly property var servers: JSON.parse(HermesApp.servers || "[]")
     readonly property var bots: JSON.parse(HermesApp.bots || "[]")
-    readonly property var sessions: JSON.parse(HermesApp.sessions || "[]")
+    readonly property var activeBotInfo: bots.find(b => b.name === HermesApp.activeBot) || null
+    readonly property string botName: activeBotInfo ? activeBotInfo.displayName : "the bot"
 
     ListModel { id: messages }
 
@@ -99,17 +100,6 @@ ApplicationWindow {
 
             ToolSeparator {}
 
-            Label { text: "Bot" }
-            ComboBox {
-                id: botBox
-                Layout.preferredWidth: 200
-                model: win.bots
-                textRole: "displayName"
-                valueRole: "name"
-                enabled: HermesApp.connected && !HermesApp.streaming
-                currentIndex: win.bots.findIndex(b => b.name === HermesApp.activeBot)
-                onActivated: HermesApp.selectBot(currentValue)
-            }
             Button {
                 text: "New chat"
                 enabled: HermesApp.connected && !HermesApp.streaming
@@ -134,9 +124,9 @@ ApplicationWindow {
     SplitView {
         anchors.fill: parent
 
-        // History of the selected bot.
+        // The server's bots; selecting one opens its chat.
         Pane {
-            SplitView.preferredWidth: 260
+            SplitView.preferredWidth: 240
             SplitView.minimumWidth: 160
             padding: 0
 
@@ -145,33 +135,44 @@ ApplicationWindow {
                 spacing: 0
 
                 Label {
-                    text: "Chats"
+                    text: "Bots"
                     font.bold: true
                     padding: 8
                 }
                 ListView {
-                    id: sessionList
+                    id: botList
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     clip: true
-                    model: win.sessions
+                    model: win.bots
                     ScrollBar.vertical: ScrollBar {}
                     delegate: ItemDelegate {
                         required property var modelData
                         width: ListView.view.width
-                        text: modelData.title
-                        highlighted: modelData.id === HermesApp.activeSession
-                        enabled: !HermesApp.streaming
-                        onClicked: HermesApp.openSession(modelData.id)
-                        contentItem: Label {
-                            text: parent.text
-                            elide: Text.ElideRight
+                        highlighted: modelData.name === HermesApp.activeBot
+                        enabled: !HermesApp.streaming || highlighted
+                        onClicked: if (!highlighted) HermesApp.selectBot(modelData.name)
+                        contentItem: ColumnLayout {
+                            spacing: 2
+                            Label {
+                                Layout.fillWidth: true
+                                text: modelData.displayName
+                                font.bold: true
+                                elide: Text.ElideRight
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text: modelData.description || modelData.model
+                                visible: text.length > 0
+                                elide: Text.ElideRight
+                                opacity: 0.7
+                            }
                         }
                     }
                     Label {
                         anchors.centerIn: parent
-                        visible: sessionList.count === 0
-                        text: HermesApp.connected ? "No chats yet" : ""
+                        visible: botList.count === 0
+                        text: HermesApp.connected ? "No bots on this server" : ""
                         opacity: 0.6
                     }
                 }
@@ -221,7 +222,7 @@ ApplicationWindow {
 
                                 Label {
                                     text: row.role === "user" ? "You"
-                                          : row.role === "assistant" ? (botBox.currentText || "Bot")
+                                          : row.role === "assistant" ? win.botName
                                           : row.role === "tool" ? "Tool"
                                           : row.role === "error" ? "Error" : ""
                                     visible: text.length > 0
@@ -257,7 +258,7 @@ ApplicationWindow {
                     Label {
                         anchors.centerIn: parent
                         visible: conversation.count === 0
-                        text: HermesApp.connected ? "Start a new chat with " + (botBox.currentText || "the bot")
+                        text: HermesApp.connected ? "Start chatting with " + win.botName
                                                   : (win.servers.length === 0 ? "Add a Hermes server to begin." : "")
                         opacity: 0.6
                     }
@@ -292,7 +293,7 @@ ApplicationWindow {
 
                             TextArea {
                                 id: input
-                                placeholderText: HermesApp.connected ? "Message " + (botBox.currentText || "the bot") + "  (Enter to send, Shift+Enter for a new line)" : "Not connected"
+                                placeholderText: HermesApp.connected ? "Message " + win.botName + "  (Enter to send, Shift+Enter for a new line)" : "Not connected"
                                 wrapMode: TextEdit.Wrap
                                 enabled: HermesApp.connected
                                 focus: true

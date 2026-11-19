@@ -19,7 +19,7 @@ Dialog {
     readonly property var provider: info && info.providers.length > 0 ? info.providers[providerBox.currentIndex] : null
     readonly property bool usesPassword: provider ? provider.supports_password : false
 
-    function reset() {
+    function clearForm() {
         info = null
         message = ""
         urlField.text = ""
@@ -30,7 +30,7 @@ Dialog {
 
     // Re-sign in to a saved server: fill the form and probe it.
     function edit(server) {
-        reset()
+        clearForm()
         urlField.text = server.url
         nameField.text = server.name
         userField.text = server.username
@@ -52,7 +52,7 @@ Dialog {
         }
         function onSignInFinished(ok, message) {
             if (ok) {
-                dialog.reset()
+                dialog.clearForm()
                 dialog.close()
             } else {
                 dialog.message = message
