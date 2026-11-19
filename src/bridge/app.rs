@@ -49,12 +49,6 @@ pub mod qobject {
         #[qinvokable]
         fn select_bot(self: Pin<&mut HermesApp>, name: QString);
         #[qinvokable]
-        fn open_latest_chat(self: Pin<&mut HermesApp>);
-        #[qinvokable]
-        fn new_chat(self: Pin<&mut HermesApp>);
-        #[qinvokable]
-        fn open_session(self: Pin<&mut HermesApp>, id: QString);
-        #[qinvokable]
         fn send(self: Pin<&mut HermesApp>, text: QString);
         #[qinvokable]
         fn stop(self: Pin<&mut HermesApp>);
@@ -94,6 +88,7 @@ pub mod qobject {
 }
 
 use core::pin::Pin;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use cxx_qt::{CxxQtType, Threading};
@@ -102,6 +97,7 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
 use crate::backend::auth::{self, RefreshError};
+use crate::backend::botchat::{self, Opened};
 use crate::backend::gateway::{Gateway, Incoming, UNAUTHORIZED};
 use crate::backend::runtime;
 use crate::backend::store::{self, Config, Server, Tokens};
@@ -126,6 +122,9 @@ pub struct AppRust {
     live_session: String,
     /// Bumped on every (re)connect so stale callbacks are ignored.
     generation: u64,
+    /// Each bot's Bot Chat as the roster reports it (`canonical_session`),
+    /// the fallback when a lookup answers empty.
+    roster_chats: HashMap<String, String>,
 }
 
 fn q(s: impl AsRef<str>) -> QString {
@@ -203,6 +202,7 @@ impl qobject::HermesApp {
             gateway.close();
         }
         rust.live_session.clear();
+        rust.roster_chats.clear();
         self.as_mut().set_connected(false);
         self.as_mut().set_streaming(false);
         self.as_mut().set_bots(q("[]"));
@@ -283,7 +283,7 @@ impl qobject::HermesApp {
     }
 
     fn load_bots(self: Pin<&mut Self>) {
-        self.call("profiles.list", json!({}), |mut app, result| {
+        self.call("profiles.list", json!({ "include_sessions": true }), |mut app, result| {
             let profiles = result.get("profiles").and_then(Value::as_array).cloned().unwrap_or_default();
             let bots: Vec<Value> = profiles
                 .iter()
@@ -305,9 +305,13 @@ impl qobject::HermesApp {
                 .or_else(|| bots.iter().find(|b| b["isDefault"] == true).and_then(|b| b["name"].as_str().map(str::to_string)))
                 .or_else(|| bots.first().and_then(|b| b["name"].as_str().map(str::to_string)))
                 .unwrap_or_else(|| "default".into());
+            app.as_mut().rust_mut().roster_chats = profiles
+                .iter()
+                .filter_map(|p| Some((p.get("name")?.as_str()?.to_string(), botchat::canonical_from_roster(p)?)))
+                .collect();
             app.as_mut().set_bots(q(Value::Array(bots).to_string()));
             app.as_mut().set_active_bot(q(&pick));
-            app.as_mut().open_latest_chat();
+            app.as_mut().open_bot_chat();
         });
     }
 
@@ -510,60 +514,56 @@ impl qobject::HermesApp {
             self.as_mut().save_config();
         }
         self.as_mut().set_active_bot(q(&name));
-        self.as_mut().open_latest_chat();
+        self.as_mut().open_bot_chat();
     }
 
-    /// Opens the bot's most recent conversation, or an empty one if it has none.
-    pub fn open_latest_chat(mut self: Pin<&mut Self>) {
-        if self.rust().streaming {
-            return;
-        }
-        self.as_mut().new_chat();
-        let profile = self.active_bot().to_string();
-        self.call("session.list", json!({ "limit": 1, "profile": profile.clone() }), move |mut app, result| {
-            if app.active_bot().to_string() != profile {
-                return;
-            }
-            let latest = result
-                .get("sessions")
-                .and_then(Value::as_array)
-                .and_then(|list| list.first())
-                .and_then(|s| s.get("id"))
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            if let Some(id) = latest {
-                app.as_mut().open_session(q(id));
-            }
-        });
-    }
-
-    pub fn new_chat(mut self: Pin<&mut Self>) {
-        if self.rust().streaming {
-            return;
-        }
+    fn clear_chat(mut self: Pin<&mut Self>) {
         self.as_mut().rust_mut().live_session.clear();
         self.as_mut().set_active_session(q(""));
         self.as_mut().transcript_loaded(q("[]"));
     }
 
-    pub fn open_session(mut self: Pin<&mut Self>, id: QString) {
+    fn apply_opened(mut self: Pin<&mut Self>, opened: Opened) {
+        self.as_mut().rust_mut().live_session = opened.live;
+        self.as_mut().set_active_session(q(&opened.stored));
+        if !opened.messages.is_empty() {
+            self.as_mut().transcript_loaded(q(transcript_for_view(&opened.messages).to_string()));
+        }
+        if opened.running {
+            self.as_mut().set_streaming(true);
+        }
+    }
+
+    /// Opens the active bot's Bot Chat. A bot that has none yet shows an empty
+    /// chat; the Bot Chat is created when the first message is sent.
+    fn open_bot_chat(mut self: Pin<&mut Self>) {
         if self.rust().streaming {
             return;
         }
-        let id = id.to_string();
+        self.as_mut().clear_chat();
+        let Some(gateway) = self.rust().gateway.clone() else { return };
         let profile = self.active_bot().to_string();
-        self.as_mut().set_active_session(q(&id));
-        self.call("session.resume", json!({ "session_id": id, "profile": profile }), move |mut app, result| {
-            if app.active_session().to_string() != id {
-                return;
+        let roster = self.rust().roster_chats.get(&profile).cloned();
+        let generation = self.rust().generation;
+        let qt = self.qt_thread();
+        runtime().spawn(async move {
+            let result = async {
+                match botchat::lookup(&gateway, &profile, roster.as_deref()).await? {
+                    Some(stored) => botchat::resume(&gateway, &profile, &stored).await.map(Some),
+                    None => Ok(None),
+                }
             }
-            let live = result.get("session_id").and_then(Value::as_str).unwrap_or_default().to_string();
-            app.as_mut().rust_mut().live_session = live;
-            let messages = result.get("messages").and_then(Value::as_array).cloned().unwrap_or_default();
-            app.as_mut().transcript_loaded(q(transcript_for_view(&messages).to_string()));
-            if result.get("running").and_then(Value::as_bool) == Some(true) {
-                app.as_mut().set_streaming(true);
-            }
+            .await;
+            let _ = qt.queue(move |mut app| {
+                if app.rust().generation != generation || app.active_bot().to_string() != profile {
+                    return;
+                }
+                match result {
+                    Ok(Some(opened)) => app.as_mut().apply_opened(opened),
+                    Ok(None) => {}
+                    Err(e) => app.as_mut().set_error(q(e)),
+                }
+            });
         });
     }
 
@@ -580,22 +580,28 @@ impl qobject::HermesApp {
         self.as_mut().user_message(q(&text));
         self.as_mut().set_streaming(true);
         let profile = self.active_bot().to_string();
+        let roster = self.rust().roster_chats.get(&profile).cloned();
         let live = self.rust().live_session.clone();
         let generation = self.rust().generation;
         let qt = self.qt_thread();
         runtime().spawn(async move {
             let result: Result<(), String> = async {
                 let live = if live.is_empty() {
-                    let created = gateway.request("session.create", json!({ "profile": profile })).await?;
-                    let live = created.get("session_id").and_then(Value::as_str).unwrap_or_default().to_string();
-                    let stored = created.get("stored_session_id").and_then(Value::as_str).unwrap_or_default().to_string();
+                    let opened = botchat::open_or_create(&gateway, &profile, roster.as_deref()).await?;
+                    let live = opened.live.clone();
                     // Queued before the prompt goes out, so the Qt thread knows the
                     // session id before any of its events arrive.
-                    let live_for_qt = live.clone();
+                    let echo = text.clone();
                     let _ = qt.queue(move |mut app| {
-                        if app.rust().generation == generation {
-                            app.as_mut().rust_mut().live_session = live_for_qt;
-                            app.as_mut().set_active_session(q(stored));
+                        if app.rust().generation != generation {
+                            return;
+                        }
+                        // The chat already existed (made elsewhere meanwhile): show
+                        // its history, then this message again below it.
+                        let had_history = !opened.messages.is_empty();
+                        app.as_mut().apply_opened(opened);
+                        if had_history {
+                            app.as_mut().user_message(q(echo));
                         }
                     });
                     live

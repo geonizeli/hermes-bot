@@ -100,11 +100,6 @@ ApplicationWindow {
 
             ToolSeparator {}
 
-            Button {
-                text: "New chat"
-                enabled: HermesApp.connected && !HermesApp.streaming
-                onClicked: HermesApp.newChat()
-            }
 
             Item { Layout.fillWidth: true }
 
@@ -258,7 +253,7 @@ ApplicationWindow {
                     Label {
                         anchors.centerIn: parent
                         visible: conversation.count === 0
-                        text: HermesApp.connected ? "Start chatting with " + win.botName
+                        text: HermesApp.connected ? "This is the start of your chat with " + win.botName
                                                   : (win.servers.length === 0 ? "Add a Hermes server to begin." : "")
                         opacity: 0.6
                     }

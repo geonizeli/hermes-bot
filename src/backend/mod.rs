@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod botchat;
 pub mod gateway;
 pub mod store;
 pub mod theme;
