@@ -26,6 +26,8 @@ pub mod qobject {
         #[qproperty(QString, active_bot, cxx_name = "activeBot")]
         #[qproperty(QString, active_session, cxx_name = "activeSession")]
         #[qproperty(bool, streaming)]
+        /// True while connecting or opening a bot's chat; the view shows a spinner.
+        #[qproperty(bool, chat_loading, cxx_name = "chatLoading")]
         /// JSON array of the active bot's scheduled jobs.
         #[qproperty(QString, jobs)]
         #[qproperty(bool, jobs_loading, cxx_name = "jobsLoading")]
@@ -121,6 +123,7 @@ pub struct AppRust {
     active_bot: QString,
     active_session: QString,
     streaming: bool,
+    chat_loading: bool,
     jobs: QString,
     jobs_loading: bool,
     jobs_error: QString,
@@ -215,6 +218,7 @@ impl qobject::HermesApp {
         rust.roster_chats.clear();
         self.as_mut().set_connected(false);
         self.as_mut().set_streaming(false);
+        self.as_mut().set_chat_loading(false);
         self.as_mut().set_bots(q("[]"));
         self.as_mut().set_jobs(q("[]"));
         self.as_mut().set_jobs_error(q(""));
@@ -240,6 +244,7 @@ impl qobject::HermesApp {
         self.as_mut().rust_mut().base_url = server.url.clone();
         let generation = self.rust().generation;
         self.as_mut().set_status_text(&format!("Connecting to {}…", server.name));
+        self.as_mut().set_chat_loading(true);
         let qt = self.qt_thread();
         runtime().spawn(async move {
             let result = open_gateway(&server, qt.clone(), generation).await;
@@ -256,6 +261,7 @@ impl qobject::HermesApp {
                         app.as_mut().load_bots();
                     }
                     Err(e) => {
+                        app.as_mut().set_chat_loading(false);
                         app.as_mut().set_status_text(&format!("Not connected to {}", server.name));
                         app.as_mut().set_error(q(e));
                     }
@@ -287,6 +293,7 @@ impl qobject::HermesApp {
                     Ok(value) => done(app, value),
                     Err(e) => {
                         app.as_mut().set_streaming(false);
+                        app.as_mut().set_chat_loading(false);
                         app.as_mut().set_error(q(e));
                     }
                 }
@@ -322,6 +329,9 @@ impl qobject::HermesApp {
                 .iter()
                 .filter_map(|p| Some((p.get("name")?.as_str()?.to_string(), botchat::canonical_from_roster(p)?)))
                 .collect();
+            if bots.is_empty() {
+                app.as_mut().set_chat_loading(false);
+            }
             app.as_mut().set_bots(q(Value::Array(bots).to_string()));
             app.as_mut().set_active_bot(q(&pick));
             app.as_mut().open_bot_chat();
@@ -572,7 +582,11 @@ impl qobject::HermesApp {
         self.as_mut().set_jobs(q("[]"));
         self.as_mut().set_jobs_error(q(""));
         self.as_mut().refresh_jobs();
-        let Some(gateway) = self.rust().gateway.clone() else { return };
+        let Some(gateway) = self.rust().gateway.clone() else {
+            self.as_mut().set_chat_loading(false);
+            return;
+        };
+        self.as_mut().set_chat_loading(true);
         let profile = self.active_bot().to_string();
         let roster = self.rust().roster_chats.get(&profile).cloned();
         let generation = self.rust().generation;
@@ -589,6 +603,7 @@ impl qobject::HermesApp {
                 if app.rust().generation != generation || app.active_bot().to_string() != profile {
                     return;
                 }
+                app.as_mut().set_chat_loading(false);
                 match result {
                     Ok(Some(opened)) => app.as_mut().apply_opened(opened),
                     Ok(None) => {}

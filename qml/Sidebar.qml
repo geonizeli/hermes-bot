@@ -129,7 +129,7 @@ Rectangle {
                 width: parent.width - 32
                 horizontalAlignment: Text.AlignHCenter
                 wrapMode: Text.Wrap
-                visible: list.count === 0
+                visible: list.count === 0 && !HermesApp.chatLoading
                 text: HermesApp.connected ? "No bots on this server" : ""
                 color: Theme.muted
             }

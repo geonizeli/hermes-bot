@@ -200,45 +200,16 @@ Item {
             Layout.fillHeight: true
             spacing: 0
 
-        Item { Layout.fillHeight: true; visible: view.empty }
-
-        // Empty chat: introduce the bot above the centered composer.
-        ColumnLayout {
-            visible: view.empty
-            Layout.alignment: Qt.AlignHCenter
-            Layout.preferredWidth: view.columnWidth
-            Layout.bottomMargin: 28
-            spacing: 10
-
-            BotAvatar {
-                Layout.alignment: Qt.AlignHCenter
-                name: view.botName
-                size: 64
-                visible: view.bot !== null
-            }
-            Label {
-                Layout.alignment: Qt.AlignHCenter
-                text: view.bot ? view.botName : (HermesApp.connected ? "Pick a bot" : "Not connected")
-                color: Theme.foreground
-                font.pixelSize: 28
-                font.weight: Font.DemiBold
-            }
-            Label {
-                Layout.alignment: Qt.AlignHCenter
-                Layout.maximumWidth: view.columnWidth
-                horizontalAlignment: Text.AlignHCenter
-                wrapMode: Text.Wrap
-                text: view.bot ? (view.bot.description || "Say hello to start your chat.") : HermesApp.status
-                color: Theme.muted
-                font.pixelSize: 15
-            }
-        }
+        // The conversation, with the loading and empty states centered over
+        // the same area so they never depend on the column layout.
+        Item {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
 
         ListView {
             id: conversation
-            visible: !view.empty
-            Layout.fillWidth: true
-            Layout.fillHeight: true
+            anchors.fill: parent
+            visible: !HermesApp.chatLoading
             clip: true
             spacing: 18
             topMargin: 24
@@ -564,6 +535,53 @@ Item {
             }
         }
 
+        Item {
+            anchors.fill: parent
+
+            BusyIndicator {
+                anchors.centerIn: parent
+                running: HermesApp.chatLoading
+                visible: running
+                width: 40
+                height: 40
+            }
+
+            // An empty Bot Chat: introduce the bot.
+            Column {
+                anchors.centerIn: parent
+                width: view.columnWidth
+                spacing: 10
+                visible: opacity > 0
+                opacity: view.empty && !HermesApp.chatLoading ? 1 : 0
+                Behavior on opacity { NumberAnimation { duration: 200 } }
+
+                BotAvatar {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    name: view.botName
+                    size: 64
+                    visible: view.bot !== null
+                }
+                Label {
+                    width: parent.width
+                    horizontalAlignment: Text.AlignHCenter
+                    text: view.bot ? view.botName : (HermesApp.connected ? "Pick a bot" : "Not connected")
+                    color: Theme.foreground
+                    font.pixelSize: 28
+                    font.weight: Font.DemiBold
+                    elide: Text.ElideRight
+                }
+                Label {
+                    width: parent.width
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.Wrap
+                    text: view.bot ? (view.bot.description || "Say hello to start your chat.") : HermesApp.status
+                    color: Theme.muted
+                    font.pixelSize: 15
+                }
+            }
+        }
+        }
+
         // Errors stay until dismissed or the next action clears them.
         Rectangle {
             readonly property bool shown: HermesApp.error.length > 0
@@ -605,13 +623,12 @@ Item {
             id: composer
             Layout.alignment: Qt.AlignHCenter
             Layout.preferredWidth: view.columnWidth
-            Layout.topMargin: view.empty ? 0 : 8
-            Layout.bottomMargin: view.empty ? 0 : 20
+            Layout.topMargin: 8
+            Layout.bottomMargin: 20
             botName: view.botName
-            visible: HermesApp.connected || !view.empty
+            visible: HermesApp.connected
         }
 
-        Item { Layout.fillHeight: true; visible: view.empty }
         }
 
         // Holds the docked panel's place.

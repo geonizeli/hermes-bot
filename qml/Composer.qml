@@ -48,7 +48,7 @@ Rectangle {
                 selectedTextColor: Theme.foreground
                 font.pixelSize: 15
                 wrapMode: TextEdit.Wrap
-                enabled: HermesApp.connected
+                enabled: HermesApp.connected && !HermesApp.chatLoading
                 focus: true
                 background: null
                 padding: 4
