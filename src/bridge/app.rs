@@ -72,9 +72,9 @@ pub mod qobject {
         #[qsignal]
         fn reasoning_delta(self: Pin<&mut HermesApp>, text: QString);
         #[qsignal]
-        fn tool_started(self: Pin<&mut HermesApp>, name: QString, detail: QString);
+        fn tool_started(self: Pin<&mut HermesApp>, id: QString, name: QString, detail: QString);
         #[qsignal]
-        fn tool_finished(self: Pin<&mut HermesApp>, name: QString, summary: QString);
+        fn tool_finished(self: Pin<&mut HermesApp>, id: QString, name: QString, summary: QString);
         /// `status` is complete, error or interrupted; `text` is the final answer.
         #[qsignal]
         fn turn_finished(self: Pin<&mut HermesApp>, status: QString, text: QString, error: QString);
@@ -295,6 +295,7 @@ impl qobject::HermesApp {
                         "description": p.get("description").and_then(Value::as_str).unwrap_or_default(),
                         "model": p.get("model").and_then(Value::as_str).unwrap_or_default(),
                         "isDefault": p.get("is_default").and_then(Value::as_bool).unwrap_or(false),
+                        "preview": p.pointer("/canonical_session/preview").and_then(Value::as_str).unwrap_or_default(),
                     })
                 })
                 .collect();
@@ -337,19 +338,23 @@ impl qobject::HermesApp {
                         let detail = Some(text("preview"))
                             .filter(|s| !s.is_empty())
                             .unwrap_or_else(|| text("args_text"));
-                        self.as_mut().tool_started(q(text("name")), q(detail));
+                        self.as_mut().tool_started(q(text("tool_id")), q(text("name")), q(detail));
                     }
                     "tool.complete" => {
                         let summary = Some(text("summary"))
                             .filter(|s| !s.is_empty())
                             .unwrap_or_else(|| text("result_text"));
-                        self.as_mut().tool_finished(q(text("name")), q(summary));
+                        self.as_mut().tool_finished(q(text("tool_id")), q(text("name")), q(summary));
                     }
                     "message.complete" => {
                         self.as_mut().set_streaming(false);
                         let status = Some(text("status")).filter(|s| !s.is_empty()).unwrap_or_else(|| "complete".into());
                         let error = Some(text("error")).filter(|s| !s.is_empty()).unwrap_or_else(|| text("failure_reason"));
-                        self.as_mut().turn_finished(q(status), q(text("text")), q(error));
+                        let final_text = text("text");
+                        if !final_text.trim().is_empty() {
+                            self.as_mut().set_bot_preview(&final_text);
+                        }
+                        self.as_mut().turn_finished(q(status), q(final_text), q(error));
                     }
                     "error" => {
                         self.as_mut().set_streaming(false);
@@ -515,6 +520,17 @@ impl qobject::HermesApp {
         }
         self.as_mut().set_active_bot(q(&name));
         self.as_mut().open_bot_chat();
+    }
+
+    /// Shows `text` as the active bot's last message in the sidebar.
+    fn set_bot_preview(mut self: Pin<&mut Self>, text: &str) {
+        let active = self.active_bot().to_string();
+        let Ok(Value::Array(mut bots)) = serde_json::from_str::<Value>(&self.bots().to_string()) else { return };
+        let preview: String = text.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(80).collect();
+        for bot in bots.iter_mut().filter(|b| b["name"] == active.as_str()) {
+            bot["preview"] = json!(preview);
+        }
+        self.as_mut().set_bots(q(Value::Array(bots).to_string()));
     }
 
     fn clear_chat(mut self: Pin<&mut Self>) {
