@@ -32,6 +32,12 @@ pub mod qobject {
         #[qproperty(QString, jobs)]
         #[qproperty(bool, jobs_loading, cxx_name = "jobsLoading")]
         #[qproperty(QString, jobs_error, cxx_name = "jobsError")]
+        /// JSON `SessionLiveInfo` of the open Bot Chat (model, provider,
+        /// reasoning_effort, fast…), "" before it exists.
+        #[qproperty(QString, session_info, cxx_name = "sessionInfo")]
+        /// JSON array of providers with their models for the active bot.
+        #[qproperty(QString, models)]
+        #[qproperty(bool, models_loading, cxx_name = "modelsLoading")]
         /// JSON `DisplayStatus` of the active bot's screen ("" while unknown;
         /// `{"unavailable": true}` when the server has no screens).
         #[qproperty(QString, screen)]
@@ -67,6 +73,15 @@ pub mod qobject {
         #[qinvokable]
         fn refresh_jobs(self: Pin<&mut HermesApp>);
         #[qinvokable]
+        fn refresh_models(self: Pin<&mut HermesApp>);
+        /// `confirmed` resends after the user accepted an expensive model.
+        #[qinvokable]
+        fn set_model(self: Pin<&mut HermesApp>, model: QString, provider: QString, confirmed: bool);
+        #[qinvokable]
+        fn set_effort(self: Pin<&mut HermesApp>, level: QString);
+        #[qinvokable]
+        fn set_fast(self: Pin<&mut HermesApp>, on: bool);
+        #[qinvokable]
         fn refresh_screen(self: Pin<&mut HermesApp>);
         #[qinvokable]
         fn start_screen(self: Pin<&mut HermesApp>);
@@ -80,6 +95,9 @@ pub mod qobject {
         /// JSON `ServerInfo`, or an empty string with `error` set.
         #[qsignal]
         fn server_probed(self: Pin<&mut HermesApp>, info: QString);
+        /// The server wants confirmation before switching to this model.
+        #[qsignal]
+        fn model_confirm(self: Pin<&mut HermesApp>, message: QString, model: QString, provider: QString);
         #[qsignal]
         fn sign_in_finished(self: Pin<&mut HermesApp>, ok: bool, message: QString);
         /// JSON array of `{role, text}`; replaces the conversation.
@@ -141,6 +159,9 @@ pub struct AppRust {
     jobs: QString,
     jobs_loading: bool,
     jobs_error: QString,
+    session_info: QString,
+    models: QString,
+    models_loading: bool,
     screen: QString,
     screen_busy: bool,
     screen_log: QString,
@@ -373,6 +394,11 @@ impl qobject::HermesApp {
                 }
                 match kind.as_str() {
                     _ if !ours => {}
+                    "session.info" => {
+                        if payload.is_object() {
+                            self.as_mut().set_session_info(q(payload.to_string()));
+                        }
+                    }
                     "message.start" => self.as_mut().assistant_started(),
                     "message.delta" => {
                         let delta = text("text");
@@ -588,6 +614,9 @@ impl qobject::HermesApp {
     }
 
     fn apply_opened(mut self: Pin<&mut Self>, opened: Opened) {
+        if opened.info.is_object() {
+            self.as_mut().set_session_info(q(opened.info.to_string()));
+        }
         self.as_mut().rust_mut().live_session = opened.live;
         self.as_mut().set_active_session(q(&opened.stored));
         if !opened.messages.is_empty() {
@@ -611,6 +640,9 @@ impl qobject::HermesApp {
         self.as_mut().set_screen(q(""));
         self.as_mut().set_screen_log(q(""));
         self.as_mut().refresh_screen();
+        self.as_mut().set_session_info(q(""));
+        self.as_mut().set_models(q("[]"));
+        self.as_mut().refresh_models();
         let Some(gateway) = self.rust().gateway.clone() else {
             self.as_mut().set_chat_loading(false);
             return;
@@ -745,6 +777,142 @@ impl qobject::HermesApp {
                 }
             });
         });
+    }
+
+    /// Reduces `model.options` providers to what the picker needs.
+    fn models_for_view(result: &Value) -> Value {
+        let providers = result.get("providers").and_then(Value::as_array).cloned().unwrap_or_default();
+        Value::Array(
+            providers
+                .iter()
+                .filter(|p| p.get("models").and_then(Value::as_array).is_some_and(|m| !m.is_empty()))
+                .map(|p| {
+                    let text = |k: &str| p.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
+                    json!({
+                        "slug": text("slug"),
+                        "name": Some(text("name")).filter(|n| !n.is_empty()).unwrap_or_else(|| text("slug")),
+                        "models": p.get("models").cloned().unwrap_or(json!([])),
+                        "current": p.get("is_current").and_then(Value::as_bool).unwrap_or(false),
+                        "authenticated": p.get("authenticated").and_then(Value::as_bool).unwrap_or(true),
+                        "warning": text("warning"),
+                        "capabilities": p.get("capabilities").cloned().unwrap_or(json!({})),
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    pub fn refresh_models(mut self: Pin<&mut Self>) {
+        let Some(gateway) = self.rust().gateway.clone() else { return };
+        let profile = self.active_bot().to_string();
+        if profile.is_empty() {
+            return;
+        }
+        let live = self.rust().live_session.clone();
+        self.as_mut().set_models_loading(true);
+        let generation = self.rust().generation;
+        let qt = self.qt_thread();
+        runtime().spawn(async move {
+            let mut params = json!({ "profile": profile, "explicit_only": true });
+            if !live.is_empty() {
+                params["session_id"] = json!(live);
+            }
+            let result = gateway.request("model.options", params).await;
+            let _ = qt.queue(move |mut app| {
+                app.as_mut().set_models_loading(false);
+                if app.rust().generation != generation || app.active_bot().to_string() != profile {
+                    return;
+                }
+                match result {
+                    Ok(reply) => app.as_mut().set_models(q(Self::models_for_view(&reply).to_string())),
+                    Err(e) => app.as_mut().set_error(q(format!("Couldn't load models: {e}"))),
+                }
+            });
+        });
+    }
+
+    /// Runs a session-scoped `config.set` on the Bot Chat, opening (or
+    /// creating) it first: without a session the server would write the
+    /// bot's config.yaml instead.
+    fn session_config(mut self: Pin<&mut Self>, key: &'static str, value: String, extra: Value, model: Option<(String, String)>) {
+        let Some(gateway) = self.rust().gateway.clone() else {
+            self.as_mut().set_error(q("Not connected."));
+            return;
+        };
+        let profile = self.active_bot().to_string();
+        let roster = self.rust().roster_chats.get(&profile).cloned();
+        let live = self.rust().live_session.clone();
+        let generation = self.rust().generation;
+        let qt = self.qt_thread();
+        runtime().spawn(async move {
+            let result: Result<Value, String> = async {
+                let live = if live.is_empty() {
+                    let opened = botchat::open_or_create(&gateway, &profile, roster.as_deref()).await?;
+                    let id = opened.live.clone();
+                    let _ = qt.queue(move |mut app| {
+                        if app.rust().generation == generation {
+                            app.as_mut().apply_opened(opened);
+                        }
+                    });
+                    id
+                } else {
+                    live
+                };
+                let mut params = json!({ "session_id": live, "key": key, "value": value, "profile": profile });
+                if let (Some(p), Some(e)) = (params.as_object_mut(), extra.as_object()) {
+                    p.extend(e.clone());
+                }
+                gateway.request("config.set", params).await
+            }
+            .await;
+            let _ = qt.queue(move |mut app| {
+                if app.rust().generation != generation {
+                    return;
+                }
+                match result {
+                    Ok(reply) => {
+                        if reply.get("confirm_required").and_then(Value::as_bool) == Some(true) {
+                            let message = reply
+                                .get("confirm_message")
+                                .and_then(Value::as_str)
+                                .unwrap_or("This model is expensive. Use it anyway?")
+                                .to_string();
+                            if let Some((model, provider)) = model {
+                                app.as_mut().model_confirm(q(message), q(model), q(provider));
+                            }
+                            return;
+                        }
+                        if let Some(info) = reply.get("info").filter(|i| i.is_object()) {
+                            app.as_mut().set_session_info(q(info.to_string()));
+                        }
+                        if let Some(warning) = reply.get("warning").and_then(Value::as_str).filter(|w| !w.is_empty()) {
+                            app.as_mut().set_error(q(warning));
+                        }
+                    }
+                    Err(e) => app.as_mut().set_error(q(e)),
+                }
+            });
+        });
+    }
+
+    pub fn set_model(self: Pin<&mut Self>, model: QString, provider: QString, confirmed: bool) {
+        let (model, provider) = (model.to_string(), provider.to_string());
+        // --session keeps the pick on this Bot Chat; the bot's profile is untouched.
+        let mut value = model.clone();
+        if !provider.is_empty() {
+            value.push_str(&format!(" --provider {provider}"));
+        }
+        value.push_str(" --session");
+        let extra = if confirmed { json!({ "confirm_expensive_model": true }) } else { json!({}) };
+        self.session_config("model", value, extra, Some((model, provider)));
+    }
+
+    pub fn set_effort(self: Pin<&mut Self>, level: QString) {
+        self.session_config("reasoning", level.to_string(), json!({ "scope": "session" }), None);
+    }
+
+    pub fn set_fast(self: Pin<&mut Self>, on: bool) {
+        self.session_config("fast", if on { "fast" } else { "normal" }.to_string(), json!({}), None);
     }
 
     /// The active bot's screen identity in display events.
@@ -941,6 +1109,7 @@ impl cxx_qt::Initialize for qobject::HermesApp {
     fn initialize(mut self: Pin<&mut Self>) {
         self.as_mut().set_bots(q("[]"));
         self.as_mut().set_jobs(q("[]"));
+        self.as_mut().set_models(q("[]"));
         match store::load(&store::config_path()) {
             Ok(config) => self.as_mut().rust_mut().config = config,
             Err(e) => self.as_mut().set_error(q(e)),

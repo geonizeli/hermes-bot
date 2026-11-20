@@ -328,3 +328,60 @@ mod live {
         println!("{}", Value::Object(summary));
     }
 }
+
+/// Prints the server's gateway.ready payload (which wire dialect it speaks):
+/// `cargo test ready_live -- --ignored --nocapture`.
+#[cfg(test)]
+mod ready_live {
+    use super::*;
+    use crate::backend::store;
+
+    #[tokio::test]
+    #[ignore]
+    async fn ready_live() {
+        let config = store::load(&store::config_path()).unwrap();
+        let Some(id) = config.active_server.clone() else { return };
+        let server = config.server(&id).unwrap().clone();
+        let mut tokens = store::load_tokens(&server.id).expect("signed in");
+        if tokens.expires_soon() {
+            tokens = crate::backend::auth::refresh(&server.url, &tokens).await.ok().expect("refresh");
+            store::save_tokens(&server.id, &tokens).unwrap();
+        }
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let _gateway = Gateway::connect(&server.url, &tokens.access_token, tx).await.unwrap();
+        if let Some(Incoming::Event { kind, payload, .. }) = rx.recv().await {
+            let keys: Vec<_> = payload.as_object().map(|o| o.keys().cloned().collect()).unwrap_or_default();
+            println!("{kind} keys={keys:?} session_authority={}", payload.get("session_authority").unwrap_or(&Value::Null));
+        }
+    }
+}
+
+/// Calls one read-only RPC on the real server and prints a summary:
+/// `HERMES_BOT_RPC=model.options HERMES_BOT_PARAMS='{"profile":"default"}' cargo test rpc_live -- --ignored --nocapture`.
+#[cfg(test)]
+mod rpc_live {
+    use super::*;
+    use crate::backend::store;
+
+    #[tokio::test]
+    #[ignore]
+    async fn rpc_live() {
+        let Ok(method) = std::env::var("HERMES_BOT_RPC") else { return };
+        let params: Value = serde_json::from_str(&std::env::var("HERMES_BOT_PARAMS").unwrap_or("{}".into())).unwrap();
+        let config = store::load(&store::config_path()).unwrap();
+        let server = config.server(config.active_server.as_deref().unwrap()).unwrap().clone();
+        let mut tokens = store::load_tokens(&server.id).expect("signed in");
+        if tokens.expires_soon() {
+            tokens = crate::backend::auth::refresh(&server.url, &tokens).await.ok().expect("refresh");
+            store::save_tokens(&server.id, &tokens).unwrap();
+        }
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let gateway = Gateway::connect(&server.url, &tokens.access_token, tx).await.unwrap();
+        let result = gateway.request(&method, params).await;
+        let text = match result {
+            Ok(v) => serde_json::to_string(&v).unwrap(),
+            Err(e) => format!("ERROR {e}"),
+        };
+        println!("RESULT {}", &text[..text.len().min(3000)]);
+    }
+}

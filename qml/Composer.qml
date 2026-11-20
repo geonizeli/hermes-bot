@@ -4,12 +4,37 @@ import QtQuick.Layouts
 import HermesBot
 
 // The message box: grows with its text, Enter sends, Shift+Enter breaks the
-// line, and the round button turns into Stop while the bot answers.
+// line, and the round button turns into Stop while the bot answers. Below the
+// text: the chat's model, reasoning effort and fast mode.
 Rectangle {
     id: composer
     property string botName: "the bot"
+    property var bot: null
 
-    implicitHeight: Math.min(Math.max(input.implicitHeight, 24), 220) + 28
+    // ---- session state ----
+    readonly property var info: {
+        try { return HermesApp.sessionInfo ? JSON.parse(HermesApp.sessionInfo) : ({}) } catch (e) { return ({}) }
+    }
+    readonly property var providers: {
+        try { return JSON.parse(HermesApp.models || "[]") } catch (e) { return [] }
+    }
+    readonly property string currentModel: info.model || (bot ? bot.model : "")
+    readonly property string currentProvider: info.provider || ""
+    // Capabilities of the current model, from whichever provider lists it.
+    readonly property var caps: {
+        for (const p of providers) {
+            if (currentProvider && p.slug !== currentProvider && p.name !== currentProvider)
+                continue
+            const c = p.capabilities ? p.capabilities[currentModel] : null
+            if (c) return c
+        }
+        return ({})
+    }
+    readonly property bool showsEffort: caps.reasoning !== false
+    readonly property bool showsFast: !!(caps.fast || caps.ultrafast) || !!info.fast
+    readonly property string effort: info.reasoning_effort || "medium"
+
+    implicitHeight: Math.min(Math.max(input.implicitHeight, 24), 220) + 28 + controls.implicitHeight + 6
     radius: Math.max(Theme.radius, 0)
     color: Theme.raised
     border.width: 1
@@ -26,18 +51,44 @@ Rectangle {
         input.text = ""
     }
 
-    RowLayout {
+    // A small rounded control in the bottom row.
+    component Chip: Rectangle {
+        id: chip
+        property string text
+        property bool active: false
+        signal clicked()
+        implicitWidth: chipLabel.implicitWidth + 20
+        implicitHeight: 28
+        radius: Theme.radius
+        color: active ? Qt.alpha(Theme.accent, 0.18) : (chipHover.hovered ? Theme.surface : Qt.alpha(Theme.surface, 0))
+        border.width: 1
+        border.color: active ? Qt.alpha(Theme.accent, 0.6) : Theme.border
+        opacity: enabled ? 1 : 0.5
+        Behavior on color { ColorAnimation { duration: 120 } }
+        Label {
+            id: chipLabel
+            anchors.centerIn: parent
+            text: chip.text
+            color: chip.active ? Theme.foreground : Theme.muted
+            font.pixelSize: 12
+            elide: Text.ElideRight
+            width: Math.min(implicitWidth, 260)
+        }
+        HoverHandler { id: chipHover; cursorShape: Qt.PointingHandCursor }
+        TapHandler { enabled: chip.enabled; onTapped: chip.clicked() }
+    }
+
+    ColumnLayout {
         anchors.fill: parent
         anchors.leftMargin: 16
         anchors.rightMargin: 10
         anchors.topMargin: 10
         anchors.bottomMargin: 10
-        spacing: 10
+        spacing: 6
 
         ScrollView {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            Layout.alignment: Qt.AlignVCenter
 
             TextArea {
                 id: input
@@ -52,7 +103,6 @@ Rectangle {
                 focus: true
                 background: null
                 padding: 4
-                verticalAlignment: TextEdit.AlignVCenter
                 Keys.onReturnPressed: event => {
                     if (event.modifiers & Qt.ShiftModifier)
                         event.accepted = false
@@ -63,58 +113,138 @@ Rectangle {
             }
         }
 
-        // Send / Stop.
-        Rectangle {
-            id: action
-            readonly property bool canSend: HermesApp.connected && input.text.trim().length > 0
-            readonly property bool live: HermesApp.streaming || canSend
-            Layout.alignment: Qt.AlignBottom
-            width: 36
-            height: 36
-            radius: 18
-            color: live ? Theme.accent : Theme.border
-            opacity: actionHover.hovered && live ? 0.85 : 1
-            scale: actionTap.pressed && live ? 0.9 : 1
-            Behavior on color { ColorAnimation { duration: 160 } }
-            Behavior on opacity { NumberAnimation { duration: 120 } }
-            Behavior on scale { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
+        RowLayout {
+            id: controls
+            Layout.fillWidth: true
+            spacing: 6
+            enabled: HermesApp.connected && !HermesApp.chatLoading
 
-            // Arrow up to send, a square to stop.
-            Canvas {
-                anchors.centerIn: parent
-                width: 16
-                height: 16
-                visible: !HermesApp.streaming
-                property color ink: action.live ? Theme.accentForeground : Theme.muted
-                onInkChanged: requestPaint()
-                onPaint: {
-                    const ctx = getContext("2d")
-                    ctx.reset()
-                    ctx.strokeStyle = ink
-                    ctx.lineWidth = 2
-                    ctx.lineCap = "round"
-                    ctx.lineJoin = "round"
-                    ctx.beginPath()
-                    ctx.moveTo(8, 14); ctx.lineTo(8, 2)
-                    ctx.moveTo(3, 7); ctx.lineTo(8, 2); ctx.lineTo(13, 7)
-                    ctx.stroke()
+            Chip {
+                text: (composer.currentModel || "Model") + "  ▾"
+                Layout.maximumWidth: 280
+                onClicked: { HermesApp.refreshModels(); modelPicker.open() }
+            }
+            Chip {
+                visible: composer.showsEffort
+                text: "Effort: " + composer.effort + "  ▾"
+                onClicked: effortMenu.popup()
+                Menu {
+                    id: effortMenu
+                    Instantiator {
+                        model: (composer.caps.can_disable_reasoning ? ["none"] : [])
+                               .concat(["minimal", "low", "medium", "high", "xhigh", "max"])
+                        delegate: MenuItem {
+                            required property string modelData
+                            text: modelData === "none" ? "none (no thinking)" : modelData
+                            checkable: true
+                            checked: modelData === composer.effort
+                            onTriggered: HermesApp.setEffort(modelData)
+                        }
+                        onObjectAdded: (index, object) => effortMenu.insertItem(index, object)
+                        onObjectRemoved: (index, object) => effortMenu.removeItem(object)
+                    }
                 }
             }
-            Rectangle {
-                anchors.centerIn: parent
-                visible: HermesApp.streaming
-                width: 12
-                height: 12
-                radius: 2
-                color: Theme.accentForeground
+            Chip {
+                visible: composer.showsFast
+                text: "⚡ Fast"
+                active: !!composer.info.fast
+                onClicked: HermesApp.setFast(!composer.info.fast)
             }
 
-            HoverHandler { id: actionHover; cursorShape: action.live ? Qt.PointingHandCursor : Qt.ArrowCursor }
-            TapHandler {
-                id: actionTap
-                enabled: action.live
-                onTapped: HermesApp.streaming ? HermesApp.stop() : composer.send()
+            Item { Layout.fillWidth: true }
+
+            // Send / Stop.
+            Rectangle {
+                id: action
+                readonly property bool canSend: HermesApp.connected && input.text.trim().length > 0
+                readonly property bool live: HermesApp.streaming || canSend
+                width: 36
+                height: 36
+                radius: 18
+                color: live ? Theme.accent : Theme.border
+                opacity: actionHover.hovered && live ? 0.85 : 1
+                scale: actionTap.pressed && live ? 0.9 : 1
+                Behavior on color { ColorAnimation { duration: 160 } }
+                Behavior on opacity { NumberAnimation { duration: 120 } }
+                Behavior on scale { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
+
+                // Arrow up to send, a square to stop.
+                Canvas {
+                    anchors.centerIn: parent
+                    width: 16
+                    height: 16
+                    visible: !HermesApp.streaming
+                    property color ink: action.live ? Theme.accentForeground : Theme.muted
+                    onInkChanged: requestPaint()
+                    onPaint: {
+                        const ctx = getContext("2d")
+                        ctx.reset()
+                        ctx.strokeStyle = ink
+                        ctx.lineWidth = 2
+                        ctx.lineCap = "round"
+                        ctx.lineJoin = "round"
+                        ctx.beginPath()
+                        ctx.moveTo(8, 14); ctx.lineTo(8, 2)
+                        ctx.moveTo(3, 7); ctx.lineTo(8, 2); ctx.lineTo(13, 7)
+                        ctx.stroke()
+                    }
+                }
+                Rectangle {
+                    anchors.centerIn: parent
+                    visible: HermesApp.streaming
+                    width: 12
+                    height: 12
+                    radius: 2
+                    color: Theme.accentForeground
+                }
+
+                HoverHandler { id: actionHover; cursorShape: action.live ? Qt.PointingHandCursor : Qt.ArrowCursor }
+                TapHandler {
+                    id: actionTap
+                    enabled: action.live
+                    onTapped: HermesApp.streaming ? HermesApp.stop() : composer.send()
+                }
             }
+        }
+    }
+
+    ModelPicker {
+        id: modelPicker
+        providers: composer.providers
+        currentModel: composer.currentModel
+        currentProvider: composer.currentProvider
+        x: 0
+        y: -height - 8
+        width: Math.min(420, composer.width)
+    }
+
+    // Expensive models need a yes first.
+    Dialog {
+        id: confirmDialog
+        property string model
+        property string provider
+        property string message
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        modal: true
+        title: "Switch model?"
+        width: 420
+        standardButtons: Dialog.Yes | Dialog.Cancel
+        Label {
+            width: parent.width
+            text: confirmDialog.message
+            wrapMode: Text.Wrap
+        }
+        onAccepted: HermesApp.setModel(model, provider, true)
+    }
+    Connections {
+        target: HermesApp
+        function onModelConfirm(message, model, provider) {
+            confirmDialog.message = message
+            confirmDialog.model = model
+            confirmDialog.provider = provider
+            confirmDialog.open()
         }
     }
 }

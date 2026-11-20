@@ -53,6 +53,8 @@ pub struct Opened {
     pub stored: String,
     pub messages: Vec<Value>,
     pub running: bool,
+    /// `SessionLiveInfo`: model, provider, reasoning effort, fast mode…
+    pub info: Value,
 }
 
 pub async fn resume(gateway: &Gateway, profile: &str, stored: &str) -> Result<Opened, String> {
@@ -64,6 +66,7 @@ pub async fn resume(gateway: &Gateway, profile: &str, stored: &str) -> Result<Op
         stored: stored.to_string(),
         messages: result.get("messages").and_then(Value::as_array).cloned().unwrap_or_default(),
         running: result.get("running").and_then(Value::as_bool).unwrap_or(false),
+        info: result.get("info").cloned().unwrap_or(Value::Null),
     })
 }
 
@@ -89,10 +92,11 @@ pub async fn open_or_create(gateway: &Gateway, profile: &str, roster: Option<&st
         .await?;
     let live = created.get("session_id").and_then(Value::as_str).unwrap_or_default().to_string();
     let stored = created.get("stored_session_id").and_then(Value::as_str).unwrap_or_default().to_string();
+    let info = created.get("info").cloned().unwrap_or(Value::Null);
     // session.create is lazy; titling now materializes the row and claims the
     // name before the first prompt, so a second open can't mint a duplicate.
     match gateway.request("session.title", json!({ "session_id": live, "title": BOT_CHAT_TITLE })).await {
-        Ok(_) => Ok(Opened { live, stored, messages: Vec::new(), running: false }),
+        Ok(_) => Ok(Opened { live, stored, messages: Vec::new(), running: false, info }),
         Err(e) if e.to_lowercase().contains("already in use") => {
             let winner = lookup(gateway, profile, None)
                 .await?
@@ -101,7 +105,7 @@ pub async fn open_or_create(gateway: &Gateway, profile: &str, roster: Option<&st
         }
         // Older servers may not title eagerly; the deferred title from
         // session.create still names the row on the first prompt.
-        Err(_) => Ok(Opened { live, stored, messages: Vec::new(), running: false }),
+        Err(_) => Ok(Opened { live, stored, messages: Vec::new(), running: false, info }),
     }
 }
 

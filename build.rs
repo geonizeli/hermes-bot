@@ -7,6 +7,7 @@ fn main() {
         "qml/ChatView.qml",
         "qml/Composer.qml",
         "qml/JobsPanel.qml",
+        "qml/ModelPicker.qml",
         "qml/ScreenPanel.qml",
         "qml/SidePanel.qml",
         "qml/Sidebar.qml",

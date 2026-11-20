@@ -634,6 +634,7 @@ Item {
             Layout.topMargin: 8
             Layout.bottomMargin: 20
             botName: view.botName
+            bot: view.bot
             visible: HermesApp.connected
         }
 
