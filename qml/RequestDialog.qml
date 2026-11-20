@@ -19,6 +19,8 @@ Dialog {
         NumberAnimation { property: "scale"; from: 1; to: 0.97; duration: 120 }
     }
     width: Math.min(560, parent ? parent.width - 40 : 560)
+    // Never taller than the window: the content scrolls, the buttons stay put.
+    height: Math.min(implicitHeight, parent ? parent.height - 40 : implicitHeight)
 
     property string requestId: ""
     property string method: ""
@@ -56,21 +58,66 @@ Dialog {
         anchors.fill: parent
         spacing: 10
 
-        // Approval
-        Label {
-            visible: dialog.isApproval && (dialog.params.description || "").length > 0
+        // What's being asked; long commands and question lists scroll.
+        ScrollView {
+            id: scroll
             Layout.fillWidth: true
-            text: dialog.params.description || ""
-            wrapMode: Text.Wrap
+            Layout.fillHeight: true
+            Layout.preferredHeight: details.implicitHeight
+            Layout.minimumHeight: Math.min(details.implicitHeight, 80)
+            visible: details.implicitHeight > 0
+            contentWidth: availableWidth
+            clip: true
+
+            ColumnLayout {
+                id: details
+                width: scroll.availableWidth
+                spacing: 10
+
+                // Approval
+                Label {
+                    visible: dialog.isApproval && (dialog.params.description || "").length > 0
+                    Layout.fillWidth: true
+                    text: dialog.params.description || ""
+                    wrapMode: Text.Wrap
+                }
+                TextArea {
+                    visible: dialog.isApproval || (dialog.method === "sudo" && (dialog.params.command || "").length > 0)
+                    Layout.fillWidth: true
+                    readOnly: true
+                    text: dialog.params.command || ""
+                    wrapMode: TextEdit.Wrap
+                    font.family: "monospace"
+                }
+                // Clarify: one field per question, or a choice list.
+                Repeater {
+                    model: dialog.isClarify ? (dialog.params.questions || []) : []
+                    delegate: ColumnLayout {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        Label {
+                            Layout.fillWidth: true
+                            text: modelData.question
+                            wrapMode: Text.Wrap
+                            font.bold: true
+                        }
+                        ComboBox {
+                            visible: (modelData.choices || []).length > 0
+                            Layout.fillWidth: true
+                            model: modelData.choices || []
+                            onActivated: dialog.answers[modelData.qid] = currentText
+                            Component.onCompleted: if (visible) dialog.answers[modelData.qid] = currentText
+                        }
+                        TextField {
+                            visible: (modelData.choices || []).length === 0
+                            Layout.fillWidth: true
+                            onTextChanged: dialog.answers[modelData.qid] = text
+                        }
+                    }
+                }
+            }
         }
-        TextArea {
-            visible: dialog.isApproval || (dialog.method === "sudo" && (dialog.params.command || "").length > 0)
-            Layout.fillWidth: true
-            readOnly: true
-            text: dialog.params.command || ""
-            wrapMode: TextEdit.Wrap
-            font.family: "monospace"
-        }
+
         Flow {
             visible: dialog.isApproval
             Layout.fillWidth: true
@@ -85,32 +132,6 @@ Dialog {
             }
         }
 
-        // Clarify: one field per question, or a choice list.
-        Repeater {
-            model: dialog.isClarify ? (dialog.params.questions || []) : []
-            delegate: ColumnLayout {
-                required property var modelData
-                Layout.fillWidth: true
-                Label {
-                    Layout.fillWidth: true
-                    text: modelData.question
-                    wrapMode: Text.Wrap
-                    font.bold: true
-                }
-                ComboBox {
-                    visible: (modelData.choices || []).length > 0
-                    Layout.fillWidth: true
-                    model: modelData.choices || []
-                    onActivated: dialog.answers[modelData.qid] = currentText
-                    Component.onCompleted: if (visible) dialog.answers[modelData.qid] = currentText
-                }
-                TextField {
-                    visible: (modelData.choices || []).length === 0
-                    Layout.fillWidth: true
-                    onTextChanged: dialog.answers[modelData.qid] = text
-                }
-            }
-        }
         RowLayout {
             visible: dialog.isClarify
             Item { Layout.fillWidth: true }
