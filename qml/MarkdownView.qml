@@ -15,7 +15,9 @@ Column {
 
     readonly property string colors: JSON.stringify({
         foreground: Theme.foreground, muted: Theme.muted, accent: Theme.accent,
-        surface: Theme.surface, border: Theme.border
+        surface: Theme.surface, border: Theme.border,
+        red: Theme.red, green: Theme.green, yellow: Theme.yellow, blue: Theme.blue,
+        magenta: Theme.magenta, cyan: Theme.cyan, orange: Theme.orange
     })
 
     ListModel { id: blocks }
@@ -108,6 +110,9 @@ Column {
                     border.color: Theme.border
                     clip: true
 
+                    // A thin accent edge marks code apart from prose.
+                    Rectangle { width: 3; height: parent.height; color: Theme.accent; z: 1 }
+
                     Rectangle {
                         id: codeHeader
                         width: parent.width
@@ -117,7 +122,7 @@ Column {
                             anchors.verticalCenter: parent.verticalCenter
                             x: 12
                             text: codeBlock.lang || "code"
-                            color: Theme.muted
+                            color: Theme.accent
                             font.pixelSize: 12
                             font.family: "monospace"
                         }
@@ -220,8 +225,8 @@ Column {
                     id: alert
                     required property string html
                     required property string kind
-                    readonly property color edge: ({ note: "#4493f8", tip: "#3fb950", important: "#ab7df8",
-                                                     warning: "#d29922", caution: Theme.danger })[kind] || Theme.accent
+                    readonly property color edge: ({ note: Theme.blue, tip: Theme.green, important: Theme.magenta,
+                                                     warning: Theme.yellow, caution: Theme.red })[kind] || Theme.accent
                     width: md.width
                     height: alertText.implicitHeight + 36
                     radius: Theme.radius

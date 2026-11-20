@@ -450,7 +450,10 @@ Item {
                             width: Math.min(userText.implicitWidth + 32, maxWidth)
                             height: userText.height + 22
                             radius: Theme.radius
-                            color: Theme.raised
+                            // Your messages carry the accent; the bot's sit on the page.
+                            color: Qt.tint(Theme.raised, Qt.alpha(Theme.accent, 0.14))
+                            border.width: 1
+                            border.color: Qt.alpha(Theme.accent, 0.3)
                             TextEdit {
                                 id: userText
                                 x: 16
@@ -500,7 +503,7 @@ Item {
                                     text: thinking ? "Thinking…"
                                           : (botRow.thoughtMs > 0 ? "Thought for " + Math.max(1, Math.round(botRow.thoughtMs / 1000)) + "s" : "Reasoning")
                                           + (botRow.showReasoning ? "  ▾" : "  ▸")
-                                    color: Theme.muted
+                                    color: Theme.magenta
                                     font.pixelSize: 13
                                     SequentialAnimation on opacity {
                                         running: thinkLabel.thinking
@@ -522,7 +525,7 @@ Item {
                                 opacity: botRow.showReasoning ? 1 : 0
                                 Behavior on opacity { NumberAnimation { duration: 200 } }
                                 color: "transparent"
-                                Rectangle { width: 2; height: parent.height; color: Theme.border }
+                                Rectangle { width: 2; height: parent.height; color: Qt.alpha(Theme.magenta, 0.6) }
                                 Label {
                                     id: reasoningText
                                     x: 14

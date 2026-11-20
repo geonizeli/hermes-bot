@@ -22,6 +22,17 @@ ColumnLayout {
     readonly property var todoList: {
         try { return JSON.parse(todos || "[]") } catch (e) { return [] }
     }
+    // Each kind of tool gets its own colour, so a run of calls reads at a glance.
+    readonly property color tint: {
+        const n = name.toLowerCase()
+        if (/terminal|shell|exec|code|process|bash|run/.test(n)) return Theme.green
+        if (/patch|write|edit|file|read|search_files|fs/.test(n)) return Theme.blue
+        if (/web|browser|fetch|url|search/.test(n)) return Theme.cyan
+        if (/image|vision|media|screen|display/.test(n)) return Theme.magenta
+        if (/todo|memory|skill|cron|schedule/.test(n)) return Theme.yellow
+        if (/delegate|agent|session|send|message/.test(n)) return Theme.orange
+        return Theme.accent
+    }
     readonly property bool hasBody: args.length > 0 || result.length > 0 || diff.length > 0 || error.length > 0
 
     Rectangle {
@@ -29,10 +40,10 @@ ColumnLayout {
         Layout.preferredWidth: chip.implicitWidth + 20
         Layout.preferredHeight: 30
         radius: Theme.radius
-        color: chipHover.hovered ? Theme.raised : Qt.alpha(Theme.raised, 0)
+        color: chipHover.hovered ? Qt.alpha(card.tint, 0.16) : Qt.alpha(card.tint, 0.07)
         Behavior on color { ColorAnimation { duration: 120 } }
         border.width: 1
-        border.color: card.error.length > 0 ? Qt.alpha(Theme.danger, 0.6) : Theme.border
+        border.color: card.error.length > 0 ? Qt.alpha(Theme.danger, 0.6) : Qt.alpha(card.tint, 0.35)
         clip: true
 
         RowLayout {
@@ -50,12 +61,12 @@ ColumnLayout {
             Label {
                 visible: card.done
                 text: card.error.length > 0 ? "✕" : "✓"
-                color: card.error.length > 0 ? Theme.danger : Theme.muted
+                color: card.error.length > 0 ? Theme.danger : card.tint
                 font.pixelSize: 12
             }
             Label {
                 text: card.name || "tool"
-                color: Theme.foreground
+                color: card.tint
                 font.pixelSize: 13
                 font.family: "monospace"
             }
@@ -95,8 +106,10 @@ ColumnLayout {
             model: card.todoList
             delegate: Label {
                 required property var modelData
-                text: (modelData.status === "completed" ? "☑ " : modelData.status === "in_progress" ? "◐ "
-                       : modelData.status === "cancelled" ? "☒ " : "☐ ") + modelData.content
+                textFormat: Text.StyledText
+                readonly property var mark: ({ completed: ["☑", Theme.green], in_progress: ["◐", Theme.yellow],
+                                               cancelled: ["☒", Theme.red] })[modelData.status] || ["☐", Theme.muted]
+                text: "<font color=\"" + mark[1] + "\">" + mark[0] + "</font>&nbsp;" + card.htmlEscape(modelData.content)
                 color: modelData.status === "completed" || modelData.status === "cancelled" ? Theme.muted : Theme.foreground
                 font.pixelSize: 13
                 font.strikeout: modelData.status === "cancelled"
@@ -142,7 +155,8 @@ ColumnLayout {
                     visible: body.length > 0
                     width: details.width
                     spacing: 4
-                    Label { text: parent.title; color: Theme.muted; font.pixelSize: 11; font.weight: Font.DemiBold }
+                    property color heading: Theme.muted
+                    Label { text: parent.title; color: parent.heading; font.pixelSize: 11; font.weight: Font.DemiBold }
                     TextEdit {
                         width: parent.width
                         readOnly: true
@@ -157,26 +171,30 @@ ColumnLayout {
                     }
                 }
 
-                Section { title: "Error"; body: card.error; tint: Theme.danger }
-                Section { title: "Arguments"; body: card.args }
-                Section { title: "Changes"; body: card.diff; isDiff: true }
-                Section { title: "Result"; body: card.result }
+                Section { title: "Error"; body: card.error; tint: Theme.danger; heading: Theme.danger }
+                Section { title: "Arguments"; body: card.args; heading: card.tint }
+                Section { title: "Changes"; body: card.diff; isDiff: true; heading: card.tint }
+                Section { title: "Result"; body: card.result; heading: card.tint }
             }
         }
     }
 
+    function htmlEscape(s) {
+        return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    }
+
     // A unified diff with added lines green and removed lines red.
     function diffHtml(text) {
-        const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/ /g, "&nbsp;")
+        const esc = s => card.htmlEscape(s).replace(/ /g, "&nbsp;")
         return text.split("\n").map(line => {
             if (line.startsWith("+++") || line.startsWith("---"))
                 return "<span style=\"color:" + Theme.muted + "\">" + esc(line) + "</span>"
             if (line.startsWith("+"))
-                return "<span style=\"color:#3fb950\">" + esc(line) + "</span>"
+                return "<span style=\"color:" + Theme.green + "\">" + esc(line) + "</span>"
             if (line.startsWith("-"))
-                return "<span style=\"color:" + Theme.danger + "\">" + esc(line) + "</span>"
+                return "<span style=\"color:" + Theme.red + "\">" + esc(line) + "</span>"
             if (line.startsWith("@@"))
-                return "<span style=\"color:#4493f8\">" + esc(line) + "</span>"
+                return "<span style=\"color:" + Theme.blue + "\">" + esc(line) + "</span>"
             return esc(line)
         }).join("<br>")
     }

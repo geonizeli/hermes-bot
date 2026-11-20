@@ -21,6 +21,13 @@ pub mod qobject {
         #[qproperty(QString, muted)]
         #[qproperty(QString, border)]
         #[qproperty(QString, danger)]
+        #[qproperty(QString, red)]
+        #[qproperty(QString, green)]
+        #[qproperty(QString, yellow)]
+        #[qproperty(QString, blue)]
+        #[qproperty(QString, magenta)]
+        #[qproperty(QString, cyan)]
+        #[qproperty(QString, orange)]
         #[qproperty(i32, radius)]
         type Theme = super::ThemeRust;
     }
@@ -45,6 +52,13 @@ pub struct ThemeRust {
     muted: QString,
     border: QString,
     danger: QString,
+    red: QString,
+    green: QString,
+    yellow: QString,
+    blue: QString,
+    magenta: QString,
+    cyan: QString,
+    orange: QString,
     radius: i32,
 }
 
@@ -61,6 +75,13 @@ impl Default for ThemeRust {
             muted: QString::from(&p.muted),
             border: QString::from(&p.border),
             danger: QString::from(&p.danger),
+            red: QString::from(&p.red),
+            green: QString::from(&p.green),
+            yellow: QString::from(&p.yellow),
+            blue: QString::from(&p.blue),
+            magenta: QString::from(&p.magenta),
+            cyan: QString::from(&p.cyan),
+            orange: QString::from(&p.orange),
             radius: 0,
         }
     }
@@ -78,6 +99,13 @@ impl qobject::Theme {
         self.as_mut().set_muted(QString::from(&p.muted));
         self.as_mut().set_border(QString::from(&p.border));
         self.as_mut().set_danger(QString::from(&p.danger));
+        self.as_mut().set_red(QString::from(&p.red));
+        self.as_mut().set_green(QString::from(&p.green));
+        self.as_mut().set_yellow(QString::from(&p.yellow));
+        self.as_mut().set_blue(QString::from(&p.blue));
+        self.as_mut().set_magenta(QString::from(&p.magenta));
+        self.as_mut().set_cyan(QString::from(&p.cyan));
+        self.as_mut().set_orange(QString::from(&p.orange));
     }
 }
 

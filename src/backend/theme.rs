@@ -24,6 +24,15 @@ pub struct Palette {
     pub muted: String,
     pub border: String,
     pub danger: String,
+    // The theme's terminal colours, for colourful content (code, headings,
+    // tool chips). Themes map these freely, so they're used by name only.
+    pub red: String,
+    pub green: String,
+    pub yellow: String,
+    pub blue: String,
+    pub magenta: String,
+    pub cyan: String,
+    pub orange: String,
 }
 
 impl Default for Palette {
@@ -39,6 +48,13 @@ impl Default for Palette {
             muted: "#8a8a8d".into(),
             border: "#2a2a2e".into(),
             danger: "#e5484d".into(),
+            red: "#ff6b6b".into(),
+            green: "#3fb950".into(),
+            yellow: "#e3b341".into(),
+            blue: "#4493f8".into(),
+            magenta: "#bc8cff".into(),
+            cyan: "#39c5cf".into(),
+            orange: "#f0883e".into(),
         }
     }
 }
@@ -83,6 +99,13 @@ pub fn read_palette(current_dir: &Path) -> Palette {
     pick(&["light_foreground", "dark_foreground"], &mut palette.muted);
     pick(&["selection", "muted"], &mut palette.border);
     pick(&["red", "bright_red"], &mut palette.danger);
+    pick(&["red", "bright_red"], &mut palette.red);
+    pick(&["green", "bright_green"], &mut palette.green);
+    pick(&["yellow", "bright_yellow"], &mut palette.yellow);
+    pick(&["blue", "bright_blue"], &mut palette.blue);
+    pick(&["magenta", "bright_magenta"], &mut palette.magenta);
+    pick(&["cyan", "bright_cyan"], &mut palette.cyan);
+    pick(&["orange", "yellow"], &mut palette.orange);
     palette
 }
 
