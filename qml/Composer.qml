@@ -34,7 +34,11 @@ Rectangle {
     readonly property bool showsFast: !!(caps.fast || caps.ultrafast) || !!info.fast
     readonly property string effort: info.reasoning_effort || "medium"
 
+    readonly property var pending: {
+        try { return JSON.parse(HermesApp.attachments || "[]") } catch (e) { return [] }
+    }
     implicitHeight: Math.min(Math.max(input.implicitHeight, 24), 220) + 28 + controls.implicitHeight + 6
+                    + (pending.length > 0 ? chips.implicitHeight + 6 : 0)
     radius: Math.max(Theme.radius, 0)
     color: Theme.raised
     border.width: 1
@@ -45,7 +49,7 @@ Rectangle {
     function focusInput() { input.forceActiveFocus() }
 
     function send() {
-        if (HermesApp.streaming || input.text.trim().length === 0)
+        if (HermesApp.streaming || (input.text.trim().length === 0 && pending.length === 0))
             return
         HermesApp.send(input.text)
         input.text = ""
@@ -86,6 +90,66 @@ Rectangle {
         anchors.bottomMargin: 10
         spacing: 6
 
+        // Files waiting to be sent.
+        Flow {
+            id: chips
+            Layout.fillWidth: true
+            visible: composer.pending.length > 0
+            spacing: 6
+            Repeater {
+                model: composer.pending
+                delegate: Rectangle {
+                    id: pendingChip
+                    required property var modelData
+                    readonly property bool isImage: modelData.kind === "image"
+                    width: isImage ? 64 : fileRow.implicitWidth + 16
+                    height: isImage ? 64 : 34
+                    radius: Theme.radius
+                    color: Theme.surface
+                    border.width: 1
+                    border.color: Theme.border
+                    clip: true
+                    Image {
+                        anchors.fill: parent
+                        visible: pendingChip.isImage
+                        source: pendingChip.isImage ? pendingChip.modelData.url : ""
+                        fillMode: Image.PreserveAspectCrop
+                        sourceSize.width: 128
+                        asynchronous: true
+                    }
+                    Row {
+                        id: fileRow
+                        visible: !pendingChip.isImage
+                        anchors.verticalCenter: parent.verticalCenter
+                        x: 8
+                        spacing: 6
+                        Label { text: "📄"; font.pixelSize: 13 }
+                        Label {
+                            text: pendingChip.modelData.name
+                            color: Theme.foreground
+                            font.pixelSize: 12
+                            elide: Text.ElideMiddle
+                            width: Math.min(implicitWidth, 200)
+                        }
+                        Item { width: 14; height: 1 }
+                    }
+                    // Remove.
+                    Rectangle {
+                        anchors.top: parent.top
+                        anchors.right: parent.right
+                        anchors.margins: 3
+                        width: 18
+                        height: 18
+                        radius: 9
+                        color: Qt.alpha("black", removeHover.hovered ? 0.8 : 0.55)
+                        Label { anchors.centerIn: parent; text: "✕"; color: "white"; font.pixelSize: 10 }
+                        HoverHandler { id: removeHover; cursorShape: Qt.PointingHandCursor }
+                        TapHandler { onTapped: HermesApp.removeAttachment(pendingChip.modelData.id) }
+                    }
+                }
+            }
+        }
+
         ScrollView {
             Layout.fillWidth: true
             Layout.fillHeight: true
@@ -103,6 +167,11 @@ Rectangle {
                 focus: true
                 background: null
                 padding: 4
+                // Images and long texts on the clipboard become attachments.
+                Keys.onPressed: event => {
+                    if (event.matches(StandardKey.Paste) && HermesApp.pasteClipboard())
+                        event.accepted = true
+                }
                 Keys.onReturnPressed: event => {
                     if (event.modifiers & Qt.ShiftModifier)
                         event.accepted = false
@@ -119,6 +188,16 @@ Rectangle {
             spacing: 6
             enabled: HermesApp.connected && !HermesApp.chatLoading
 
+            Chip {
+                text: "+"
+                implicitWidth: 28
+                ToolTip.visible: hovered
+                ToolTip.text: "Attach files (or drop / paste them)"
+                ToolTip.delay: 600
+                readonly property bool hovered: plusHover.hovered
+                HoverHandler { id: plusHover }
+                onClicked: HermesApp.pickFiles()
+            }
             Chip {
                 text: (composer.currentModel || "Model") + "  ▾"
                 Layout.maximumWidth: 280
@@ -157,7 +236,7 @@ Rectangle {
             // Send / Stop.
             Rectangle {
                 id: action
-                readonly property bool canSend: HermesApp.connected && input.text.trim().length > 0
+                readonly property bool canSend: HermesApp.connected && (input.text.trim().length > 0 || composer.pending.length > 0)
                 readonly property bool live: HermesApp.streaming || canSend
                 width: 36
                 height: 36

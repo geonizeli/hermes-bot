@@ -33,7 +33,7 @@ Item {
     function addRow(fields) {
         messages.append(Object.assign({
             role: "assistant", text: "", reasoning: "", toolId: "", name: "",
-            detail: "", summary: "", done: true, thoughtMs: 0
+            detail: "", summary: "", done: true, thoughtMs: 0, attachments: "[]"
         }, fields))
         return messages.count - 1
     }
@@ -70,14 +70,15 @@ Item {
                 if (row.role === "tool")
                     view.addRow({ role: "tool", name: row.text })
                 else
-                    view.addRow({ role: row.role, text: row.text, reasoning: row.reasoning || "" })
+                    view.addRow({ role: row.role, text: row.text, reasoning: row.reasoning || "",
+                                  attachments: row.attachments || "[]" })
             }
             view.scrollToEnd()
             composer.focusInput()
             Qt.callLater(() => view.animateAdds = true)
         }
-        function onUserMessage(text) {
-            view.addRow({ role: "user", text: text })
+        function onUserMessage(text, attachments) {
+            view.addRow({ role: "user", text: text, attachments: attachments })
             view.assistantRow = -1
             view.scrollToEnd()
         }
@@ -253,12 +254,70 @@ Item {
                     Item {
                         id: userRow
                         required property string text
+                        required property string attachments
+                        readonly property var files: {
+                            try { return JSON.parse(attachments || "[]") } catch (e) { return [] }
+                        }
+                        readonly property real rightEdge: (width + view.columnWidth) / 2
                         width: ListView.view.width
-                        height: bubble.height
+                        height: (files.length > 0 ? sent.height + (userRow.text.length > 0 ? 6 : 0) : 0)
+                                + (userRow.text.length > 0 ? bubble.height : 0)
+
+                        // What was attached, right-aligned above the text.
+                        Flow {
+                            id: sent
+                            visible: userRow.files.length > 0
+                            width: Math.min(implicitWidth, view.columnWidth * 0.8)
+                            x: userRow.rightEdge - width
+                            layoutDirection: Qt.RightToLeft
+                            spacing: 6
+                            Repeater {
+                                model: userRow.files
+                                delegate: Loader {
+                                    required property var modelData
+                                    sourceComponent: modelData.kind === "image" ? imageChip : fileChip
+                                    Component {
+                                        id: imageChip
+                                        RemoteImage {
+                                            url: modelData.url || ""
+                                            path: modelData.path || ""
+                                            maxWidth: 240
+                                            maxHeight: 180
+                                            onClicked: Qt.openUrlExternally(source)
+                                        }
+                                    }
+                                    Component {
+                                        id: fileChip
+                                        Rectangle {
+                                            width: fileLabel.implicitWidth + 36
+                                            height: 34
+                                            radius: Theme.radius
+                                            color: Theme.raised
+                                            border.width: 1
+                                            border.color: Theme.border
+                                            Row {
+                                                anchors.centerIn: parent
+                                                spacing: 6
+                                                Label { text: "📄"; font.pixelSize: 13 }
+                                                Label {
+                                                    id: fileLabel
+                                                    text: modelData.name
+                                                    color: Theme.foreground
+                                                    font.pixelSize: 12
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         Rectangle {
                             id: bubble
+                            visible: userRow.text.length > 0
                             readonly property real maxWidth: view.columnWidth * 0.8
-                            x: (userRow.width + view.columnWidth) / 2 - width
+                            x: userRow.rightEdge - width
+                            y: userRow.files.length > 0 ? sent.height + 6 : 0
                             width: Math.min(userText.implicitWidth + 32, maxWidth)
                             height: userText.height + 22
                             radius: Theme.radius
@@ -705,6 +764,33 @@ Item {
                 orientation: Gradient.Horizontal
                 GradientStop { position: 0; color: "transparent" }
                 GradientStop { position: 1; color: Qt.alpha("black", 0.35) }
+            }
+        }
+    }
+
+    // Drop files anywhere on the chat to attach them.
+    DropArea {
+        anchors.fill: parent
+        z: 20
+        enabled: HermesApp.connected && view.bot !== null
+        onEntered: drag => drag.accept(Qt.CopyAction)
+        onDropped: drop => {
+            if (drop.hasUrls) {
+                HermesApp.addFiles(JSON.stringify(drop.urls.map(u => u.toString())))
+                drop.accept(Qt.CopyAction)
+            }
+        }
+        Rectangle {
+            anchors.fill: parent
+            visible: parent.containsDrag
+            color: Qt.alpha(Theme.background, 0.85)
+            border.width: 2
+            border.color: Theme.accent
+            Label {
+                anchors.centerIn: parent
+                text: "Drop files to attach"
+                color: Theme.foreground
+                font.pixelSize: 20
             }
         }
     }

@@ -9,6 +9,8 @@ use super::gateway::Gateway;
 pub struct Session {
     pub gateway: Arc<Gateway>,
     pub base_url: String,
+    /// Bearer token for REST calls (media, files).
+    pub access_token: String,
 }
 
 static CURRENT: Mutex<Option<Session>> = Mutex::new(None);

@@ -37,6 +37,8 @@ pub mod qobject {
         #[qproperty(QString, session_info, cxx_name = "sessionInfo")]
         /// JSON array of providers with their models for the active bot.
         #[qproperty(QString, models)]
+        /// JSON array of files waiting to go with the next message.
+        #[qproperty(QString, attachments)]
         #[qproperty(bool, models_loading, cxx_name = "modelsLoading")]
         /// JSON `DisplayStatus` of the active bot's screen ("" while unknown;
         /// `{"unavailable": true}` when the server has no screens).
@@ -74,6 +76,20 @@ pub mod qobject {
         fn refresh_jobs(self: Pin<&mut HermesApp>);
         #[qinvokable]
         fn refresh_models(self: Pin<&mut HermesApp>);
+        #[qinvokable]
+        fn pick_files(self: Pin<&mut HermesApp>);
+        /// JSON array of file:// URLs or paths (drops).
+        #[qinvokable]
+        fn add_files(self: Pin<&mut HermesApp>, urls: QString);
+        #[qinvokable]
+        fn remove_attachment(self: Pin<&mut HermesApp>, id: i32);
+        /// Takes images and long texts from the clipboard as attachments;
+        /// false means ordinary text the text box should paste itself.
+        #[qinvokable]
+        fn paste_clipboard(self: Pin<&mut HermesApp>) -> bool;
+        /// Fetches a server-side file (an image) into the local cache.
+        #[qinvokable]
+        fn request_media(self: Pin<&mut HermesApp>, path: QString);
         /// `confirmed` resends after the user accepted an expensive model.
         #[qinvokable]
         fn set_model(self: Pin<&mut HermesApp>, model: QString, provider: QString, confirmed: bool);
@@ -103,8 +119,11 @@ pub mod qobject {
         /// JSON array of `{role, text}`; replaces the conversation.
         #[qsignal]
         fn transcript_loaded(self: Pin<&mut HermesApp>, messages: QString);
+        /// `attachments` is a JSON array of `{kind, name, url}`.
         #[qsignal]
-        fn user_message(self: Pin<&mut HermesApp>, text: QString);
+        fn user_message(self: Pin<&mut HermesApp>, text: QString, attachments: QString);
+        #[qsignal]
+        fn media_ready(self: Pin<&mut HermesApp>, path: QString, url: QString);
         #[qsignal]
         fn assistant_started(self: Pin<&mut HermesApp>);
         #[qsignal]
@@ -139,6 +158,7 @@ use tokio::sync::mpsc;
 use crate::backend::auth::{self, RefreshError};
 use crate::backend::botchat::{self, Opened};
 use crate::backend::cron;
+use crate::backend::{attachments, media};
 use crate::backend::gateway::{Gateway, Incoming, UNAUTHORIZED};
 use crate::backend::{runtime, session};
 use crate::backend::store::{self, Config, Server, Tokens};
@@ -161,6 +181,7 @@ pub struct AppRust {
     jobs_error: QString,
     session_info: QString,
     models: QString,
+    attachments: QString,
     models_loading: bool,
     screen: QString,
     screen_busy: bool,
@@ -176,6 +197,10 @@ pub struct AppRust {
     /// Each bot's Bot Chat as the roster reports it (`canonical_session`),
     /// the fallback when a lookup answers empty.
     roster_chats: HashMap<String, String>,
+    pending: Vec<attachments::Attachment>,
+    next_attachment: u64,
+    /// Server path → local file URL.
+    media_cache: HashMap<String, String>,
 }
 
 fn q(s: impl AsRef<str>) -> QString {
@@ -205,14 +230,21 @@ pub fn transcript_for_view(messages: &[Value]) -> Value {
         .filter_map(|m| {
             let role = m.get("role").and_then(Value::as_str).unwrap_or_default();
             match role {
-                "user" | "assistant" => {
+                "user" => {
+                    let (text, refs) = attachments::split_refs(&message_text(m));
+                    (!text.trim().is_empty() || !refs.is_empty()).then(|| {
+                        json!({ "role": role, "text": text, "reasoning": "", "attachments": Value::Array(refs).to_string() })
+                    })
+                }
+                "assistant" => {
                     let text = message_text(m);
                     let reasoning = m.get("reasoning").and_then(Value::as_str).unwrap_or_default();
-                    (!text.trim().is_empty()).then(|| json!({ "role": role, "text": text, "reasoning": reasoning }))
+                    (!text.trim().is_empty())
+                        .then(|| json!({ "role": role, "text": text, "reasoning": reasoning, "attachments": "[]" }))
                 }
                 "tool" => {
                     let name = m.get("name").and_then(Value::as_str).unwrap_or("tool");
-                    Some(json!({ "role": "tool", "text": name, "reasoning": "" }))
+                    Some(json!({ "role": "tool", "text": name, "reasoning": "", "attachments": "[]" }))
                 }
                 _ => None,
             }
@@ -294,8 +326,12 @@ impl qobject::HermesApp {
                     return;
                 }
                 match result {
-                    Ok(gateway) => {
-                        session::set(Some(session::Session { gateway: gateway.clone(), base_url: server.url.clone() }));
+                    Ok((gateway, access_token)) => {
+                        session::set(Some(session::Session {
+                            gateway: gateway.clone(),
+                            base_url: server.url.clone(),
+                            access_token,
+                        }));
                         app.as_mut().rust_mut().gateway = Some(gateway);
                         app.as_mut().set_connected(true);
                         app.as_mut().set_error(q(""));
@@ -643,6 +679,8 @@ impl qobject::HermesApp {
         self.as_mut().set_session_info(q(""));
         self.as_mut().set_models(q("[]"));
         self.as_mut().refresh_models();
+        self.as_mut().rust_mut().pending.clear();
+        self.as_mut().publish_attachments();
         let Some(gateway) = self.rust().gateway.clone() else {
             self.as_mut().set_chat_loading(false);
             return;
@@ -676,7 +714,7 @@ impl qobject::HermesApp {
 
     pub fn send(mut self: Pin<&mut Self>, text: QString) {
         let text = text.to_string();
-        if text.trim().is_empty() || self.rust().streaming {
+        if (text.trim().is_empty() && self.rust().pending.is_empty()) || self.rust().streaming {
             return;
         }
         let Some(gateway) = self.rust().gateway.clone() else {
@@ -684,7 +722,11 @@ impl qobject::HermesApp {
             return;
         };
         self.as_mut().set_error(q(""));
-        self.as_mut().user_message(q(&text));
+        let pending = std::mem::take(&mut self.as_mut().rust_mut().pending);
+        self.as_mut().publish_attachments();
+        let view: Vec<Value> = pending.iter().map(|a| a.to_view()).collect();
+        let echo_attachments = Value::Array(view).to_string();
+        self.as_mut().user_message(q(&text), q(&echo_attachments));
         self.as_mut().set_streaming(true);
         let profile = self.active_bot().to_string();
         let roster = self.rust().roster_chats.get(&profile).cloned();
@@ -708,15 +750,25 @@ impl qobject::HermesApp {
                         let had_history = !opened.messages.is_empty();
                         app.as_mut().apply_opened(opened);
                         if had_history {
-                            app.as_mut().user_message(q(echo));
+                            app.as_mut().user_message(q(echo), q(echo_attachments));
                         }
                     });
                     live
                 } else {
                     live
                 };
+                // Images are queued on the session for this prompt; files come
+                // back as @file: references that lead the text.
+                let mut refs = Vec::new();
+                for attachment in &pending {
+                    if let Some(reference) = attachments::upload(&gateway, &live, attachment).await? {
+                        refs.push(reference);
+                    }
+                }
+                let has_images = pending.iter().any(|a| a.kind == attachments::Kind::Image);
+                let prompt = attachments::compose_prompt(&text, &refs, has_images);
                 gateway
-                    .request("prompt.submit", json!({ "session_id": live, "text": text, "profile": profile }))
+                    .request("prompt.submit", json!({ "session_id": live, "text": prompt, "profile": profile }))
                     .await?;
                 Ok(())
             }
@@ -774,6 +826,87 @@ impl qobject::HermesApp {
                         }
                     },
                     Err(e) => app.as_mut().set_jobs_error(q(e)),
+                }
+            });
+        });
+    }
+
+    fn publish_attachments(mut self: Pin<&mut Self>) {
+        let view: Vec<Value> = self.rust().pending.iter().map(|a| a.to_view()).collect();
+        self.as_mut().set_attachments(q(Value::Array(view).to_string()));
+    }
+
+    fn add_paths(mut self: Pin<&mut Self>, paths: Vec<std::path::PathBuf>) {
+        let mut problems = Vec::new();
+        for path in paths {
+            let id = {
+                let mut rust = self.as_mut().rust_mut();
+                rust.next_attachment += 1;
+                rust.next_attachment
+            };
+            match attachments::from_path(id, &path) {
+                Ok(attachment) => self.as_mut().rust_mut().pending.push(attachment),
+                Err(e) => problems.push(e),
+            }
+        }
+        if !problems.is_empty() {
+            self.as_mut().set_error(q(problems.join(" ")));
+        }
+        self.as_mut().publish_attachments();
+    }
+
+    pub fn pick_files(self: Pin<&mut Self>) {
+        let qt = self.qt_thread();
+        runtime().spawn(async move {
+            let result = attachments::pick_files().await;
+            let _ = qt.queue(move |mut app| match result {
+                Ok(paths) => app.as_mut().add_paths(paths),
+                Err(e) => app.as_mut().set_error(q(e)),
+            });
+        });
+    }
+
+    pub fn add_files(self: Pin<&mut Self>, urls: QString) {
+        let list: Vec<String> = serde_json::from_str(&urls.to_string()).unwrap_or_default();
+        let paths = list.iter().filter_map(|u| attachments::path_from_url(u)).collect();
+        self.add_paths(paths);
+    }
+
+    pub fn remove_attachment(mut self: Pin<&mut Self>, id: i32) {
+        self.as_mut().rust_mut().pending.retain(|a| a.id != id as u64);
+        self.publish_attachments();
+    }
+
+    pub fn paste_clipboard(mut self: Pin<&mut Self>) -> bool {
+        match attachments::paste_clipboard(&attachments::scratch_dir()) {
+            Ok(attachments::Pasted::File(path)) => {
+                self.add_paths(vec![path]);
+                true
+            }
+            Ok(attachments::Pasted::Text) | Ok(attachments::Pasted::Nothing) => false,
+            Err(e) => {
+                self.as_mut().set_error(q(e));
+                false
+            }
+        }
+    }
+
+    pub fn request_media(mut self: Pin<&mut Self>, path: QString) {
+        let path = path.to_string();
+        if let Some(url) = self.rust().media_cache.get(&path).cloned() {
+            self.as_mut().media_ready(q(&path), q(url));
+            return;
+        }
+        let Some(session) = session::current() else { return };
+        let profile = self.active_bot().to_string();
+        let qt = self.qt_thread();
+        runtime().spawn(async move {
+            let result = media::fetch(&session, &path, &profile).await;
+            let _ = qt.queue(move |mut app| {
+                if let Ok(file) = result {
+                    let url = url::Url::from_file_path(&file).map(|u| u.to_string()).unwrap_or_default();
+                    app.as_mut().rust_mut().media_cache.insert(path.clone(), url.clone());
+                    app.as_mut().media_ready(q(path), q(url));
                 }
             });
         });
@@ -1048,7 +1181,7 @@ async fn open_gateway(
     server: &Server,
     qt: cxx_qt::CxxQtThread<qobject::HermesApp>,
     generation: u64,
-) -> Result<Arc<Gateway>, String> {
+) -> Result<(Arc<Gateway>, String), String> {
     let id = server.id.clone();
     let mut tokens: Tokens = tokio::task::spawn_blocking(move || store::load_tokens(&id))
         .await
@@ -1083,7 +1216,7 @@ async fn open_gateway(
             }
         }
     });
-    Ok(gateway)
+    Ok((gateway, tokens.access_token))
 }
 
 async fn refresh_tokens(server: &Server, tokens: &Tokens) -> Result<Tokens, String> {
@@ -1110,6 +1243,7 @@ impl cxx_qt::Initialize for qobject::HermesApp {
         self.as_mut().set_bots(q("[]"));
         self.as_mut().set_jobs(q("[]"));
         self.as_mut().set_models(q("[]"));
+        self.as_mut().set_attachments(q("[]"));
         match store::load(&store::config_path()) {
             Ok(config) => self.as_mut().rust_mut().config = config,
             Err(e) => self.as_mut().set_error(q(e)),
@@ -1135,9 +1269,9 @@ mod tests {
         assert_eq!(
             rows,
             json!([
-                {"role":"user","text":"hi","reasoning":""},
-                {"role":"assistant","text":"hello","reasoning":"think"},
-                {"role":"tool","text":"web_search","reasoning":""},
+                {"role":"user","text":"hi","reasoning":"","attachments":"[]"},
+                {"role":"assistant","text":"hello","reasoning":"think","attachments":"[]"},
+                {"role":"tool","text":"web_search","reasoning":"","attachments":"[]"},
             ])
         );
     }

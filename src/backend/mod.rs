@@ -1,7 +1,9 @@
+pub mod attachments;
 pub mod auth;
 pub mod botchat;
 pub mod cron;
 pub mod gateway;
+pub mod media;
 pub mod rfb;
 pub mod session;
 pub mod store;
