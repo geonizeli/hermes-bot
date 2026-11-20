@@ -28,12 +28,15 @@ Item {
     ListModel { id: messages }
 
     property int assistantRow: -1
+    // This turn's to-do card, updated in place by todo.updated.
+    property int todoRow: -1
     property var thinkingSince: 0
 
     function addRow(fields) {
         messages.append(Object.assign({
             role: "assistant", text: "", reasoning: "", toolId: "", name: "",
-            detail: "", summary: "", done: true, thoughtMs: 0, attachments: "[]"
+            detail: "", summary: "", done: true, thoughtMs: 0, attachments: "[]",
+            args: "", result: "", diff: "", todos: "[]", duration: 0, error: "", timestamp: 0
         }, fields))
         return messages.count - 1
     }
@@ -65,21 +68,18 @@ Item {
             chatFade.restart()
             messages.clear()
             view.assistantRow = -1
+            view.todoRow = -1
             view.thinkingSince = 0
-            for (const row of JSON.parse(json)) {
-                if (row.role === "tool")
-                    view.addRow({ role: "tool", name: row.text })
-                else
-                    view.addRow({ role: row.role, text: row.text, reasoning: row.reasoning || "",
-                                  attachments: row.attachments || "[]" })
-            }
+            for (const row of JSON.parse(json))
+                view.addRow(Object.assign({ done: true }, row))
             view.scrollToEnd()
             composer.focusInput()
             Qt.callLater(() => view.animateAdds = true)
         }
         function onUserMessage(text, attachments) {
-            view.addRow({ role: "user", text: text, attachments: attachments })
+            view.addRow({ role: "user", text: text, attachments: attachments, timestamp: Date.now() / 1000 })
             view.assistantRow = -1
+            view.todoRow = -1
             view.scrollToEnd()
         }
         function onAssistantStarted() { view.ensureAssistantRow() }
@@ -96,23 +96,45 @@ Item {
             messages.setProperty(view.assistantRow, "reasoning", messages.get(view.assistantRow).reasoning + text)
             view.scrollToEnd()
         }
-        function onToolStarted(id, name, detail) {
+        function onToolStarted(json) {
+            const tool = JSON.parse(json)
             view.closeThinking()
             if (view.assistantRow >= 0)
                 messages.setProperty(view.assistantRow, "done", true)
-            view.addRow({ role: "tool", toolId: id, name: name, detail: detail, done: false })
+            view.addRow(Object.assign({ role: "tool", done: false }, tool))
             // Text after a tool call starts a new answer below it.
             view.assistantRow = -1
             view.scrollToEnd()
         }
-        function onToolFinished(id, name, summary) {
+        function onToolFinished(json) {
+            const tool = JSON.parse(json)
             for (let i = messages.count - 1; i >= 0; i--) {
                 const row = messages.get(i)
-                if (row.role === "tool" && !row.done && (row.toolId === id || (!id && row.name === name))) {
-                    messages.setProperty(i, "summary", summary)
+                if (row.role === "tool" && !row.done && (row.toolId === tool.toolId || (!tool.toolId && row.name === tool.name))) {
+                    for (const k of ["result", "diff", "todos", "duration", "error", "summary"])
+                        if (tool[k] !== undefined)
+                            messages.setProperty(i, k, tool[k])
                     messages.setProperty(i, "done", true)
                     break
                 }
+            }
+        }
+        function onAssistantInterim(text, alreadyStreamed) {
+            if (!alreadyStreamed && text.length > 0) {
+                view.ensureAssistantRow()
+                messages.setProperty(view.assistantRow, "text", messages.get(view.assistantRow).text + text)
+            }
+            // The commentary is its own section; what follows starts a new one.
+            if (view.assistantRow >= 0)
+                messages.setProperty(view.assistantRow, "done", true)
+            view.assistantRow = -1
+        }
+        function onTodosUpdated(json) {
+            if (view.todoRow >= 0 && view.todoRow < messages.count && messages.get(view.todoRow).role === "todos") {
+                messages.setProperty(view.todoRow, "todos", json)
+            } else {
+                view.todoRow = view.addRow({ role: "todos", todos: json })
+                view.scrollToEnd()
             }
         }
         function onTurnFinished(status, text, error) {
@@ -404,21 +426,10 @@ Item {
                                 }
                             }
 
-                            TextEdit {
+                            MarkdownView {
                                 Layout.fillWidth: true
                                 visible: botRow.text.length > 0
-                                text: botRow.text
-                                textFormat: TextEdit.MarkdownText
-                                color: Theme.foreground
-                                font.pixelSize: 15
-                                wrapMode: TextEdit.Wrap
-                                readOnly: true
-                                selectByMouse: true
-                                selectionColor: Qt.alpha(Theme.accent, 0.4)
-                                onLinkActivated: link => Qt.openUrlExternally(link)
-                                HoverHandler {
-                                    cursorShape: parent.hoveredLink ? Qt.PointingHandCursor : Qt.IBeamCursor
-                                }
+                                markdown: botRow.text
                             }
 
                             // Copy, once the answer is complete.
@@ -454,78 +465,46 @@ Item {
                         id: toolRow
                         required property string name
                         required property string detail
-                        required property string summary
+                        required property string args
+                        required property string result
+                        required property string diff
+                        required property string todos
+                        required property real duration
+                        required property string error
                         required property bool done
-                        property bool expanded: false
                         width: ListView.view.width
-                        height: toolColumn.height
-
-                        ColumnLayout {
-                            id: toolColumn
+                        height: toolCard.implicitHeight
+                        ToolCard {
+                            id: toolCard
                             x: (toolRow.width - view.columnWidth) / 2
                             width: view.columnWidth
-                            spacing: 6
+                            name: toolRow.name
+                            detail: toolRow.detail
+                            args: toolRow.args
+                            result: toolRow.result
+                            diff: toolRow.diff
+                            todos: toolRow.todos
+                            duration: toolRow.duration
+                            error: toolRow.error
+                            done: toolRow.done
+                        }
+                    }
+                }
 
-                            Rectangle {
-                                Layout.preferredHeight: 28
-                                Layout.preferredWidth: chipRow.implicitWidth + 20
-                                radius: Theme.radius
-                                color: chipHover.hovered ? Theme.raised : Qt.alpha(Theme.raised, 0)
-                                Behavior on color { ColorAnimation { duration: 120 } }
-                                border.width: 1
-                                border.color: Theme.border
-                                RowLayout {
-                                    id: chipRow
-                                    anchors.centerIn: parent
-                                    spacing: 8
-                                    BusyIndicator {
-                                        visible: !toolRow.done
-                                        running: visible
-                                        Layout.preferredWidth: 14
-                                        Layout.preferredHeight: 14
-                                    }
-                                    Label {
-                                        visible: toolRow.done
-                                        text: "✓"
-                                        color: Theme.muted
-                                        font.pixelSize: 12
-                                    }
-                                    Label {
-                                        text: toolRow.name || "tool"
-                                        color: Theme.muted
-                                        font.pixelSize: 13
-                                        font.family: "monospace"
-                                    }
-                                    Label {
-                                        visible: toolRow.detail.length > 0 || toolRow.summary.length > 0
-                                        text: toolRow.expanded ? "▾" : "▸"
-                                        color: Theme.muted
-                                        font.pixelSize: 11
-                                    }
-                                }
-                                HoverHandler { id: chipHover; cursorShape: Qt.PointingHandCursor }
-                                TapHandler { onTapped: toolRow.expanded = !toolRow.expanded }
-                            }
-                            Label {
-                                id: toolDetails
-                                readonly property bool shown: toolRow.expanded && (toolRow.detail.length > 0 || toolRow.summary.length > 0)
-                                visible: Layout.preferredHeight > 0
-                                Layout.preferredHeight: shown ? implicitHeight : 0
-                                Behavior on Layout.preferredHeight { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
-                                clip: true
-                                opacity: shown ? 1 : 0
-                                Behavior on opacity { NumberAnimation { duration: 200 } }
-                                Layout.fillWidth: true
-                                text: [toolRow.detail, toolRow.summary].filter(s => s.length > 0).join("\n\n")
-                                color: Theme.muted
-                                font.pixelSize: 12
-                                font.family: "monospace"
-                                wrapMode: Text.WrapAnywhere
-                                maximumLineCount: 30
-                                elide: Text.ElideRight
-                                leftPadding: 12
-                                Rectangle { width: 2; height: parent.height; color: Theme.border }
-                            }
+                DelegateChoice {
+                    roleValue: "todos"
+                    Item {
+                        id: todoRowItem
+                        required property string todos
+                        width: ListView.view.width
+                        height: todoCard.implicitHeight
+                        ToolCard {
+                            id: todoCard
+                            x: (todoRowItem.width - view.columnWidth) / 2
+                            width: view.columnWidth
+                            name: "todo"
+                            detail: "Plan"
+                            todos: todoRowItem.todos
                         }
                     }
                 }

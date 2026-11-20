@@ -76,6 +76,10 @@ pub mod qobject {
         fn refresh_jobs(self: Pin<&mut HermesApp>);
         #[qinvokable]
         fn refresh_models(self: Pin<&mut HermesApp>);
+        /// Display blocks (JSON) for a bot answer; `colors` is JSON with
+        /// foreground, muted, accent, surface and border.
+        #[qinvokable]
+        fn render_markdown(self: Pin<&mut HermesApp>, text: QString, colors: QString) -> QString;
         #[qinvokable]
         fn pick_files(self: Pin<&mut HermesApp>);
         /// JSON array of file:// URLs or paths (drops).
@@ -130,10 +134,18 @@ pub mod qobject {
         fn assistant_delta(self: Pin<&mut HermesApp>, text: QString);
         #[qsignal]
         fn reasoning_delta(self: Pin<&mut HermesApp>, text: QString);
+        /// A tool row's fields (JSON): toolId, name, detail, args.
         #[qsignal]
-        fn tool_started(self: Pin<&mut HermesApp>, id: QString, name: QString, detail: QString);
+        fn tool_started(self: Pin<&mut HermesApp>, tool: QString);
+        /// toolId, name, result, diff, todos, duration, error (JSON).
         #[qsignal]
-        fn tool_finished(self: Pin<&mut HermesApp>, id: QString, name: QString, summary: QString);
+        fn tool_finished(self: Pin<&mut HermesApp>, tool: QString);
+        /// Commentary the bot wrote before calling tools; it ends a section.
+        #[qsignal]
+        fn assistant_interim(self: Pin<&mut HermesApp>, text: QString, already_streamed: bool);
+        /// The bot's to-do list (JSON array of {content, status}).
+        #[qsignal]
+        fn todos_updated(self: Pin<&mut HermesApp>, todos: QString);
         /// `status` is complete, error or interrupted; `text` is the final answer.
         #[qsignal]
         fn turn_finished(self: Pin<&mut HermesApp>, status: QString, text: QString, error: QString);
@@ -158,7 +170,7 @@ use tokio::sync::mpsc;
 use crate::backend::auth::{self, RefreshError};
 use crate::backend::botchat::{self, Opened};
 use crate::backend::cron;
-use crate::backend::{attachments, media};
+use crate::backend::{attachments, history, markdown, media};
 use crate::backend::gateway::{Gateway, Incoming, UNAUTHORIZED};
 use crate::backend::{runtime, session};
 use crate::backend::store::{self, Config, Server, Tokens};
@@ -201,6 +213,9 @@ pub struct AppRust {
     next_attachment: u64,
     /// Server path → local file URL.
     media_cache: HashMap<String, String>,
+    /// Rendered answers by (text, colours) hash; answers re-render on every
+    /// streamed delta, finished ones shouldn't.
+    markdown_cache: HashMap<u64, String>,
 }
 
 fn q(s: impl AsRef<str>) -> QString {
@@ -223,31 +238,41 @@ fn message_text(m: &Value) -> String {
     }
 }
 
-/// The server's transcript, reduced to what the conversation view shows.
+/// The chat socket's transcript (no tool results), as conversation rows;
+/// used when the REST history isn't available.
 pub fn transcript_for_view(messages: &[Value]) -> Value {
     let rows: Vec<Value> = messages
         .iter()
         .filter_map(|m| {
             let role = m.get("role").and_then(Value::as_str).unwrap_or_default();
+            let mut r = history::row(role);
+            r["timestamp"] = m.get("timestamp").cloned().unwrap_or(json!(0.0));
             match role {
                 "user" => {
                     let (text, refs) = attachments::split_refs(&message_text(m));
-                    (!text.trim().is_empty() || !refs.is_empty()).then(|| {
-                        json!({ "role": role, "text": text, "reasoning": "", "attachments": Value::Array(refs).to_string() })
-                    })
+                    if text.trim().is_empty() && refs.is_empty() {
+                        return None;
+                    }
+                    r["text"] = json!(text);
+                    r["attachments"] = json!(Value::Array(refs).to_string());
                 }
                 "assistant" => {
                     let text = message_text(m);
                     let reasoning = m.get("reasoning").and_then(Value::as_str).unwrap_or_default();
-                    (!text.trim().is_empty())
-                        .then(|| json!({ "role": role, "text": text, "reasoning": reasoning, "attachments": "[]" }))
+                    if text.trim().is_empty() && reasoning.trim().is_empty() {
+                        return None;
+                    }
+                    r["text"] = json!(text);
+                    r["reasoning"] = json!(reasoning);
                 }
                 "tool" => {
-                    let name = m.get("name").and_then(Value::as_str).unwrap_or("tool");
-                    Some(json!({ "role": "tool", "text": name, "reasoning": "", "attachments": "[]" }))
+                    r["name"] = json!(m.get("name").and_then(Value::as_str).unwrap_or("tool"));
+                    r["detail"] = json!(m.get("context").and_then(Value::as_str).unwrap_or_default());
+                    r["args"] = json!(history::pretty_args(m.get("args").unwrap_or(&Value::Null)));
                 }
-                _ => None,
+                _ => return None,
             }
+            Some(r)
         })
         .collect();
     Value::Array(rows)
@@ -444,16 +469,54 @@ impl qobject::HermesApp {
                     }
                     "reasoning.delta" | "thinking.delta" => self.as_mut().reasoning_delta(q(text("text"))),
                     "tool.start" => {
-                        let detail = Some(text("preview"))
-                            .filter(|s| !s.is_empty())
-                            .unwrap_or_else(|| text("args_text"));
-                        self.as_mut().tool_started(q(text("tool_id")), q(text("name")), q(detail));
+                        let label = payload
+                            .get("labels")
+                            .and_then(|l| l.get(0))
+                            .and_then(|l| l.get("text").and_then(Value::as_str))
+                            .unwrap_or_default()
+                            .to_string();
+                        let detail = [label, text("preview"), text("context")]
+                            .into_iter()
+                            .find(|s| !s.is_empty())
+                            .unwrap_or_default();
+                        let args = match payload.get("args") {
+                            Some(a) if !a.is_null() => history::pretty_args(a),
+                            _ => text("args_text"),
+                        };
+                        let tool = json!({ "toolId": text("tool_id"), "name": text("name"), "detail": detail, "args": args });
+                        self.as_mut().tool_started(q(tool.to_string()));
                     }
                     "tool.complete" => {
-                        let summary = Some(text("summary"))
-                            .filter(|s| !s.is_empty())
-                            .unwrap_or_else(|| text("result_text"));
-                        self.as_mut().tool_finished(q(text("tool_id")), q(text("name")), q(summary));
+                        let (mut result, mut diff, mut error) = history::tool_result(payload.get("result").unwrap_or(&Value::Null));
+                        if result.is_empty() {
+                            result = [text("result_text"), text("summary")].into_iter().find(|s| !s.is_empty()).unwrap_or_default();
+                        }
+                        if !text("inline_diff").is_empty() {
+                            diff = text("inline_diff");
+                        }
+                        if !text("error").is_empty() {
+                            error = text("error");
+                        }
+                        let tool = json!({
+                            "toolId": text("tool_id"),
+                            "name": text("name"),
+                            "summary": text("summary"),
+                            "result": result,
+                            "diff": diff,
+                            "todos": payload.get("todos").filter(|t| t.is_array()).map(|t| t.to_string()).unwrap_or_else(|| "[]".into()),
+                            "duration": payload.get("duration_s").and_then(Value::as_f64).unwrap_or(0.0),
+                            "error": error,
+                        });
+                        self.as_mut().tool_finished(q(tool.to_string()));
+                    }
+                    "message.interim" => {
+                        let streamed = payload.get("already_streamed").and_then(Value::as_bool).unwrap_or(false);
+                        self.as_mut().assistant_interim(q(text("text")), streamed);
+                    }
+                    "todo.updated" => {
+                        if let Some(todos) = payload.get("todos").filter(|t| t.is_array()) {
+                            self.as_mut().todos_updated(q(todos.to_string()));
+                        }
                     }
                     "message.complete" => {
                         self.as_mut().set_streaming(false);
@@ -649,14 +712,18 @@ impl qobject::HermesApp {
         self.as_mut().transcript_loaded(q("[]"));
     }
 
-    fn apply_opened(mut self: Pin<&mut Self>, opened: Opened) {
+    fn apply_opened(mut self: Pin<&mut Self>, opened: Opened, view: Option<Vec<Value>>) {
         if opened.info.is_object() {
             self.as_mut().set_session_info(q(opened.info.to_string()));
         }
         self.as_mut().rust_mut().live_session = opened.live;
         self.as_mut().set_active_session(q(&opened.stored));
-        if !opened.messages.is_empty() {
-            self.as_mut().transcript_loaded(q(transcript_for_view(&opened.messages).to_string()));
+        match view {
+            Some(rows) if !rows.is_empty() => self.as_mut().transcript_loaded(q(Value::Array(rows).to_string())),
+            _ if !opened.messages.is_empty() => {
+                self.as_mut().transcript_loaded(q(transcript_for_view(&opened.messages).to_string()))
+            }
+            _ => {}
         }
         if opened.running {
             self.as_mut().set_streaming(true);
@@ -691,9 +758,18 @@ impl qobject::HermesApp {
         let generation = self.rust().generation;
         let qt = self.qt_thread();
         runtime().spawn(async move {
-            let result = async {
+            let result: Result<Option<(Opened, Option<Vec<Value>>)>, String> = async {
                 match botchat::lookup(&gateway, &profile, roster.as_deref()).await? {
-                    Some(stored) => botchat::resume(&gateway, &profile, &stored).await.map(Some),
+                    Some(stored) => {
+                        let opened = botchat::resume(&gateway, &profile, &stored).await?;
+                        // The REST transcript has tool results; fall back to the
+                        // socket's history if it can't be read.
+                        let view = match session::current() {
+                            Some(s) => history::load(&s, &opened.stored, &profile).await.ok(),
+                            None => None,
+                        };
+                        Ok(Some((opened, view)))
+                    }
                     None => Ok(None),
                 }
             }
@@ -704,7 +780,7 @@ impl qobject::HermesApp {
                 }
                 app.as_mut().set_chat_loading(false);
                 match result {
-                    Ok(Some(opened)) => app.as_mut().apply_opened(opened),
+                    Ok(Some((opened, view))) => app.as_mut().apply_opened(opened, view),
                     Ok(None) => {}
                     Err(e) => app.as_mut().set_error(q(e)),
                 }
@@ -748,7 +824,7 @@ impl qobject::HermesApp {
                         // The chat already existed (made elsewhere meanwhile): show
                         // its history, then this message again below it.
                         let had_history = !opened.messages.is_empty();
-                        app.as_mut().apply_opened(opened);
+                        app.as_mut().apply_opened(opened, None);
                         if had_history {
                             app.as_mut().user_message(q(echo), q(echo_attachments));
                         }
@@ -829,6 +905,25 @@ impl qobject::HermesApp {
                 }
             });
         });
+    }
+
+    pub fn render_markdown(mut self: Pin<&mut Self>, text: QString, colors: QString) -> QString {
+        use std::hash::{Hash, Hasher};
+        let (text, colors) = (text.to_string(), colors.to_string());
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        (&text, &colors).hash(&mut hasher);
+        let key = hasher.finish();
+        if let Some(hit) = self.rust().markdown_cache.get(&key) {
+            return q(hit);
+        }
+        let palette: markdown::Colors = serde_json::from_str(&colors).unwrap_or_default();
+        let rendered = markdown::render(&text, &palette).to_string();
+        let cache = &mut self.as_mut().rust_mut().markdown_cache;
+        if cache.len() > 400 {
+            cache.clear();
+        }
+        cache.insert(key, rendered.clone());
+        q(rendered)
     }
 
     fn publish_attachments(mut self: Pin<&mut Self>) {
@@ -984,7 +1079,7 @@ impl qobject::HermesApp {
                     let id = opened.live.clone();
                     let _ = qt.queue(move |mut app| {
                         if app.rust().generation == generation {
-                            app.as_mut().apply_opened(opened);
+                            app.as_mut().apply_opened(opened, None);
                         }
                     });
                     id
@@ -1266,13 +1361,11 @@ mod tests {
             json!({"role":"tool","name":"web_search"}),
             json!({"role":"assistant","content":""}),
         ]);
-        assert_eq!(
-            rows,
-            json!([
-                {"role":"user","text":"hi","reasoning":"","attachments":"[]"},
-                {"role":"assistant","text":"hello","reasoning":"think","attachments":"[]"},
-                {"role":"tool","text":"web_search","reasoning":"","attachments":"[]"},
-            ])
-        );
+        let rows = rows.as_array().unwrap();
+        let roles: Vec<_> = rows.iter().map(|r| r["role"].as_str().unwrap()).collect();
+        assert_eq!(roles, vec!["user", "assistant", "tool"]);
+        assert_eq!(rows[1]["text"], "hello");
+        assert_eq!(rows[1]["reasoning"], "think");
+        assert_eq!(rows[2]["name"], "web_search");
     }
 }

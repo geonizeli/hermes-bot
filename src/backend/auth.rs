@@ -361,3 +361,32 @@ mod live {
         assert!(!info.version.is_empty());
     }
 }
+
+/// One read-only REST GET with the saved sign-in:
+/// `HERMES_BOT_GET='/api/sessions?limit=1' cargo test rest_live -- --ignored --nocapture`.
+#[cfg(test)]
+mod rest_live {
+    #[tokio::test]
+    #[ignore]
+    async fn rest_live() {
+        use crate::backend::store;
+        let Ok(path) = std::env::var("HERMES_BOT_GET") else { return };
+        let config = store::load(&store::config_path()).unwrap();
+        let server = config.server(config.active_server.as_deref().unwrap()).unwrap().clone();
+        let mut tokens = store::load_tokens(&server.id).expect("signed in");
+        if tokens.expires_soon() {
+            tokens = super::refresh(&server.url, &tokens).await.ok().expect("refresh");
+            store::save_tokens(&server.id, &tokens).unwrap();
+        }
+        let body = super::http()
+            .get(format!("{}{path}", server.url))
+            .bearer_auth(&tokens.access_token)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        println!("BODY {body}");
+    }
+}
