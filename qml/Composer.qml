@@ -10,6 +10,20 @@ Rectangle {
     id: composer
     property string botName: "the bot"
     property var bot: null
+    // Editing your latest message: sending replaces it and what followed.
+    property bool editing: false
+    signal editSubmitted(string text)
+
+    function startEdit(text) {
+        editing = true
+        input.text = text
+        input.forceActiveFocus()
+        input.cursorPosition = input.length
+    }
+    function cancelEdit() {
+        editing = false
+        input.text = ""
+    }
 
     // ---- session state ----
     readonly property var info: {
@@ -39,6 +53,7 @@ Rectangle {
     }
     implicitHeight: Math.min(Math.max(input.implicitHeight, 24), 220) + 28 + controls.implicitHeight + 6
                     + (pending.length > 0 ? chips.implicitHeight + 6 : 0)
+                    + (editing ? editBanner.implicitHeight + 6 : 0)
     radius: Math.max(Theme.radius, 0)
     color: Theme.raised
     border.width: 1
@@ -49,9 +64,27 @@ Rectangle {
     function focusInput() { input.forceActiveFocus() }
 
     function send() {
-        if (HermesApp.streaming || (input.text.trim().length === 0 && pending.length === 0))
+        const text = input.text
+        if (HermesApp.streaming) {
+            // Typing while the bot works steers it; an empty send stops it.
+            if (text.trim().length > 0) {
+                HermesApp.steer(text)
+                input.text = ""
+            } else {
+                HermesApp.stop()
+            }
             return
-        HermesApp.send(input.text)
+        }
+        if (editing) {
+            if (text.trim().length === 0) return
+            editing = false
+            input.text = ""
+            editSubmitted(text)
+            return
+        }
+        if (text.trim().length === 0 && pending.length === 0)
+            return
+        HermesApp.send(text)
         input.text = ""
     }
 
@@ -89,6 +122,26 @@ Rectangle {
         anchors.topMargin: 10
         anchors.bottomMargin: 10
         spacing: 6
+
+        RowLayout {
+            id: editBanner
+            visible: composer.editing
+            Layout.fillWidth: true
+            Label {
+                Layout.fillWidth: true
+                text: "Editing your message. Sending replaces it and the answers after it."
+                color: Theme.accent
+                font.pixelSize: 12
+                elide: Text.ElideRight
+            }
+            Label {
+                text: "Cancel"
+                color: cancelHover.hovered ? Theme.foreground : Theme.muted
+                font.pixelSize: 12
+                HoverHandler { id: cancelHover; cursorShape: Qt.PointingHandCursor }
+                TapHandler { onTapped: composer.cancelEdit() }
+            }
+        }
 
         // Files waiting to be sent.
         Flow {
@@ -156,7 +209,9 @@ Rectangle {
 
             TextArea {
                 id: input
-                placeholderText: HermesApp.connected ? "Message " + composer.botName : "Not connected"
+                placeholderText: !HermesApp.connected ? "Not connected"
+                                 : HermesApp.streaming ? "Steer " + composer.botName + "… (empty send stops)"
+                                 : "Message " + composer.botName
                 placeholderTextColor: Theme.muted
                 color: Theme.foreground
                 selectionColor: Qt.alpha(Theme.accent, 0.4)
@@ -236,8 +291,11 @@ Rectangle {
             // Send / Stop.
             Rectangle {
                 id: action
-                readonly property bool canSend: HermesApp.connected && (input.text.trim().length > 0 || composer.pending.length > 0)
+                readonly property bool hasText: input.text.trim().length > 0
+                readonly property bool canSend: HermesApp.connected && (hasText || composer.pending.length > 0)
                 readonly property bool live: HermesApp.streaming || canSend
+                // While the bot works: an arrow steers when there's text, a square stops.
+                readonly property bool stopping: HermesApp.streaming && !hasText
                 width: 36
                 height: 36
                 radius: 18
@@ -253,7 +311,7 @@ Rectangle {
                     anchors.centerIn: parent
                     width: 16
                     height: 16
-                    visible: !HermesApp.streaming
+                    visible: !action.stopping
                     property color ink: action.live ? Theme.accentForeground : Theme.muted
                     onInkChanged: requestPaint()
                     onPaint: {
@@ -271,7 +329,7 @@ Rectangle {
                 }
                 Rectangle {
                     anchors.centerIn: parent
-                    visible: HermesApp.streaming
+                    visible: action.stopping
                     width: 12
                     height: 12
                     radius: 2
@@ -282,7 +340,7 @@ Rectangle {
                 TapHandler {
                     id: actionTap
                     enabled: action.live
-                    onTapped: HermesApp.streaming ? HermesApp.stop() : composer.send()
+                    onTapped: composer.send()
                 }
             }
         }

@@ -21,7 +21,7 @@ pub fn row(role: &str) -> Value {
     json!({
         "role": role, "text": "", "reasoning": "", "attachments": "[]",
         "toolId": "", "name": "", "detail": "", "args": "", "result": "", "diff": "",
-        "todos": "[]", "duration": 0.0, "error": "", "timestamp": 0.0,
+        "todos": "[]", "duration": 0.0, "error": "", "timestamp": 0.0, "rowId": -1,
     })
 }
 
@@ -94,6 +94,7 @@ pub fn to_view(rows: &[Value]) -> Vec<Value> {
         }
         let text = |k: &str| m.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
         let timestamp = m.get("timestamp").and_then(Value::as_f64).unwrap_or(0.0);
+        let row_id = m.get("id").and_then(Value::as_i64).unwrap_or(-1);
         let content = m
             .get("display_content")
             .and_then(Value::as_str)
@@ -118,6 +119,7 @@ pub fn to_view(rows: &[Value]) -> Vec<Value> {
                 r["text"] = json!(body);
                 r["attachments"] = json!(Value::Array(refs).to_string());
                 r["timestamp"] = json!(timestamp);
+                r["rowId"] = json!(row_id);
                 out.push(r);
             }
             "assistant" => {
@@ -127,6 +129,7 @@ pub fn to_view(rows: &[Value]) -> Vec<Value> {
                     r["text"] = json!(content);
                     r["reasoning"] = json!(reasoning);
                     r["timestamp"] = json!(timestamp);
+                    r["rowId"] = json!(row_id);
                     out.push(r);
                 }
                 let labels = m.get("tool_call_labels").cloned().unwrap_or(Value::Null);

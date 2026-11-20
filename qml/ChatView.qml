@@ -36,9 +36,41 @@ Item {
         messages.append(Object.assign({
             role: "assistant", text: "", reasoning: "", toolId: "", name: "",
             detail: "", summary: "", done: true, thoughtMs: 0, attachments: "[]",
-            args: "", result: "", diff: "", todos: "[]", duration: 0, error: "", timestamp: 0
+            args: "", result: "", diff: "", todos: "[]", duration: 0, error: "", timestamp: 0, rowId: -1
         }, fields))
+        if (messages.get(messages.count - 1).role === "user")
+            lastUserIndex = messages.count - 1
         return messages.count - 1
+    }
+
+    // The latest message you sent: it can be edited, and the answers after
+    // it regenerated.
+    property int lastUserIndex: -1
+
+    function timeLabel(ts) {
+        if (!ts) return ""
+        const d = new Date(ts * 1000)
+        const today = new Date()
+        return d.toDateString() === today.toDateString()
+            ? d.toLocaleTimeString(Qt.locale(), Locale.ShortFormat)
+            : d.toLocaleString(Qt.locale(), Locale.ShortFormat)
+    }
+
+    // Drops your latest message and everything after it, then sends `text`
+    // in its place (regenerate when unchanged, edit otherwise).
+    function resendLast(text) {
+        const i = lastUserIndex
+        if (i < 0 || HermesApp.streaming) return
+        const rowId = messages.get(i).rowId
+        if (rowId < 0) {
+            HermesApp.error = "This message can't be changed yet; reopen the chat and try again."
+            return
+        }
+        messages.remove(i, messages.count - i)
+        lastUserIndex = -1
+        assistantRow = -1
+        todoRow = -1
+        HermesApp.resend(text, rowId)
     }
 
     function ensureAssistantRow() {
@@ -69,6 +101,7 @@ Item {
             messages.clear()
             view.assistantRow = -1
             view.todoRow = -1
+            view.lastUserIndex = -1
             view.thinkingSince = 0
             for (const row of JSON.parse(json))
                 view.addRow(Object.assign({ done: true }, row))
@@ -80,6 +113,14 @@ Item {
             view.addRow({ role: "user", text: text, attachments: attachments, timestamp: Date.now() / 1000 })
             view.assistantRow = -1
             view.todoRow = -1
+            view.scrollToEnd()
+        }
+        function onUserRowId(rowId) {
+            if (view.lastUserIndex >= 0)
+                messages.setProperty(view.lastUserIndex, "rowId", rowId)
+        }
+        function onSteered(text, status) {
+            view.addRow({ role: "info", text: status === "rejected" ? "Couldn't steer: " + text : "↪ " + text })
             view.scrollToEnd()
         }
         function onAssistantStarted() { view.ensureAssistantRow() }
@@ -187,6 +228,45 @@ Item {
                     elide: Text.ElideRight
                 }
 
+                // How full the model's context is.
+                Item {
+                    id: gauge
+                    readonly property var usage: {
+                        try { return HermesApp.usage ? JSON.parse(HermesApp.usage) : null } catch (e) { return null }
+                    }
+                    visible: usage !== null && usage.contextMax > 0
+                    Layout.preferredWidth: 120
+                    Layout.preferredHeight: 30
+                    function k(n) { return n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k" : Math.round(n) }
+                    Column {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: parent.width
+                        spacing: 3
+                        Label {
+                            text: gauge.usage ? Math.round(gauge.usage.percent) + "% context" : ""
+                            color: Theme.muted
+                            font.pixelSize: 11
+                        }
+                        Rectangle {
+                            width: parent.width
+                            height: 3
+                            radius: 1.5
+                            color: Theme.border
+                            Rectangle {
+                                height: parent.height
+                                radius: 1.5
+                                width: gauge.usage ? parent.width * Math.min(1, gauge.usage.percent / 100) : 0
+                                color: gauge.usage && gauge.usage.percent > 85 ? Theme.danger : Theme.accent
+                                Behavior on width { NumberAnimation { duration: 300 } }
+                            }
+                        }
+                    }
+                    HoverHandler { id: gaugeHover }
+                    ToolTip.visible: gaugeHover.hovered && usage !== null
+                    ToolTip.text: usage ? gauge.k(usage.contextUsed) + " / " + gauge.k(usage.contextMax) + " tokens in context"
+                                          + (usage.cost >= 0 ? "\nCost so far: $" + usage.cost.toFixed(4) : "") : ""
+                }
+
                 // Side panel toggles.
                 Repeater {
                     model: [
@@ -275,8 +355,35 @@ Item {
                     roleValue: "user"
                     Item {
                         id: userRow
+                        required property int index
+                        required property real timestamp
                         required property string text
                         required property string attachments
+                        HoverHandler { id: userHover }
+
+                        // Edit (latest message only) and time, beside the bubble on hover.
+                        Row {
+                            visible: userRow.text.length > 0
+                            anchors.verticalCenter: bubble.verticalCenter
+                            x: bubble.x - width - 12
+                            spacing: 12
+                            opacity: userHover.hovered ? 1 : 0
+                            Behavior on opacity { NumberAnimation { duration: 150 } }
+                            Label {
+                                visible: userRow.timestamp > 0
+                                text: view.timeLabel(userRow.timestamp)
+                                color: Theme.muted
+                                font.pixelSize: 12
+                            }
+                            Label {
+                                visible: userRow.index === view.lastUserIndex && !HermesApp.streaming
+                                text: "Edit"
+                                color: editHover.hovered ? Theme.foreground : Theme.muted
+                                font.pixelSize: 12
+                                HoverHandler { id: editHover; cursorShape: Qt.PointingHandCursor }
+                                TapHandler { onTapped: composer.startEdit(userRow.text) }
+                            }
+                        }
                         readonly property var files: {
                             try { return JSON.parse(attachments || "[]") } catch (e) { return [] }
                         }
@@ -366,6 +473,7 @@ Item {
                     Item {
                         id: botRow
                         required property int index
+                        required property real timestamp
                         required property string text
                         required property string reasoning
                         required property bool done
@@ -432,27 +540,44 @@ Item {
                                 markdown: botRow.text
                             }
 
-                            // Copy, once the answer is complete.
-                            Label {
-                                id: copyLabel
+                            // Copy and regenerate, once the answer is complete.
+                            Row {
                                 visible: botRow.done && botRow.text.length > 0
-                                text: copied ? "Copied" : "Copy"
-                                property bool copied: false
-                                color: copyHover.hovered ? Theme.foreground : Theme.muted
-                                font.pixelSize: 12
-                                opacity: copyHover.hovered || rowHover.hovered ? 1 : 0
+                                spacing: 14
+                                opacity: rowHover.hovered ? 1 : 0
                                 Behavior on opacity { NumberAnimation { duration: 150 } }
-                                HoverHandler { id: copyHover; cursorShape: Qt.PointingHandCursor }
-                                TapHandler {
-                                    onTapped: {
-                                        clipboard.text = botRow.text
-                                        clipboard.selectAll()
-                                        clipboard.copy()
-                                        copyLabel.copied = true
-                                        copyReset.restart()
+                                Label {
+                                    id: copyLabel
+                                    text: copied ? "Copied" : "Copy"
+                                    property bool copied: false
+                                    color: copyHover.hovered ? Theme.foreground : Theme.muted
+                                    font.pixelSize: 12
+                                    HoverHandler { id: copyHover; cursorShape: Qt.PointingHandCursor }
+                                    TapHandler {
+                                        onTapped: {
+                                            clipboard.text = botRow.text
+                                            clipboard.selectAll()
+                                            clipboard.copy()
+                                            copyLabel.copied = true
+                                            copyReset.restart()
+                                        }
                                     }
+                                    Timer { id: copyReset; interval: 1500; onTriggered: copyLabel.copied = false }
                                 }
-                                Timer { id: copyReset; interval: 1500; onTriggered: copyLabel.copied = false }
+                                Label {
+                                    visible: botRow.index > view.lastUserIndex && view.lastUserIndex >= 0 && !HermesApp.streaming
+                                    text: "Regenerate"
+                                    color: regenHover.hovered ? Theme.foreground : Theme.muted
+                                    font.pixelSize: 12
+                                    HoverHandler { id: regenHover; cursorShape: Qt.PointingHandCursor }
+                                    TapHandler { onTapped: view.resendLast(messages.get(view.lastUserIndex).text) }
+                                }
+                                Label {
+                                    visible: botRow.timestamp > 0
+                                    text: view.timeLabel(botRow.timestamp)
+                                    color: Theme.muted
+                                    font.pixelSize: 12
+                                }
                             }
                         }
                         HoverHandler { id: rowHover }
@@ -673,6 +798,7 @@ Item {
             Layout.bottomMargin: 20
             botName: view.botName
             bot: view.bot
+            onEditSubmitted: text => view.resendLast(text)
             visible: HermesApp.connected
         }
 

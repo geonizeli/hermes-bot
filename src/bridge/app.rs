@@ -37,6 +37,8 @@ pub mod qobject {
         #[qproperty(QString, session_info, cxx_name = "sessionInfo")]
         /// JSON array of providers with their models for the active bot.
         #[qproperty(QString, models)]
+        /// JSON {contextUsed, contextMax, percent, total, cost} for the chat.
+        #[qproperty(QString, usage)]
         /// JSON array of files waiting to go with the next message.
         #[qproperty(QString, attachments)]
         #[qproperty(bool, models_loading, cxx_name = "modelsLoading")]
@@ -72,6 +74,13 @@ pub mod qobject {
         fn send(self: Pin<&mut HermesApp>, text: QString);
         #[qinvokable]
         fn stop(self: Pin<&mut HermesApp>);
+        /// Adds guidance to the running turn (after the current tool).
+        #[qinvokable]
+        fn steer(self: Pin<&mut HermesApp>, text: QString);
+        /// Regenerate or edit: drops the conversation from user row
+        /// `row_id` on and sends `text` in its place.
+        #[qinvokable]
+        fn resend(self: Pin<&mut HermesApp>, text: QString, row_id: i32);
         #[qinvokable]
         fn refresh_jobs(self: Pin<&mut HermesApp>);
         #[qinvokable]
@@ -126,6 +135,11 @@ pub mod qobject {
         /// `attachments` is a JSON array of `{kind, name, url}`.
         #[qsignal]
         fn user_message(self: Pin<&mut HermesApp>, text: QString, attachments: QString);
+        /// The stored row id of the message just sent (for edit/regenerate).
+        #[qsignal]
+        fn user_row_id(self: Pin<&mut HermesApp>, row_id: i32);
+        #[qsignal]
+        fn steered(self: Pin<&mut HermesApp>, text: QString, status: QString);
         #[qsignal]
         fn media_ready(self: Pin<&mut HermesApp>, path: QString, url: QString);
         #[qsignal]
@@ -192,6 +206,7 @@ pub struct AppRust {
     jobs_loading: bool,
     jobs_error: QString,
     session_info: QString,
+    usage: QString,
     models: QString,
     attachments: QString,
     models_loading: bool,
@@ -247,6 +262,7 @@ pub fn transcript_for_view(messages: &[Value]) -> Value {
             let role = m.get("role").and_then(Value::as_str).unwrap_or_default();
             let mut r = history::row(role);
             r["timestamp"] = m.get("timestamp").cloned().unwrap_or(json!(0.0));
+            r["rowId"] = m.get("row_id").cloned().filter(|v| v.is_i64()).unwrap_or(json!(-1));
             match role {
                 "user" => {
                     let (text, refs) = attachments::split_refs(&message_text(m));
@@ -458,8 +474,12 @@ impl qobject::HermesApp {
                     "session.info" => {
                         if payload.is_object() {
                             self.as_mut().set_session_info(q(payload.to_string()));
+                            if let Some(usage) = payload.get("usage").filter(|u| u.is_object()) {
+                                self.as_mut().apply_usage(usage);
+                            }
                         }
                     }
+                    "session.usage" => self.as_mut().apply_usage(&payload),
                     "message.start" => self.as_mut().assistant_started(),
                     "message.delta" => {
                         let delta = text("text");
@@ -520,6 +540,9 @@ impl qobject::HermesApp {
                     }
                     "message.complete" => {
                         self.as_mut().set_streaming(false);
+                        if let Some(usage) = payload.get("usage").filter(|u| u.is_object()) {
+                            self.as_mut().apply_usage(usage);
+                        }
                         let status = Some(text("status")).filter(|s| !s.is_empty()).unwrap_or_else(|| "complete".into());
                         let error = Some(text("error")).filter(|s| !s.is_empty()).unwrap_or_else(|| text("failure_reason"));
                         let final_text = text("text");
@@ -715,6 +738,9 @@ impl qobject::HermesApp {
     fn apply_opened(mut self: Pin<&mut Self>, opened: Opened, view: Option<Vec<Value>>) {
         if opened.info.is_object() {
             self.as_mut().set_session_info(q(opened.info.to_string()));
+            if let Some(usage) = opened.info.get("usage").filter(|u| u.is_object()) {
+                self.as_mut().apply_usage(usage);
+            }
         }
         self.as_mut().rust_mut().live_session = opened.live;
         self.as_mut().set_active_session(q(&opened.stored));
@@ -744,6 +770,7 @@ impl qobject::HermesApp {
         self.as_mut().set_screen_log(q(""));
         self.as_mut().refresh_screen();
         self.as_mut().set_session_info(q(""));
+        self.as_mut().set_usage(q(""));
         self.as_mut().set_models(q("[]"));
         self.as_mut().refresh_models();
         self.as_mut().rust_mut().pending.clear();
@@ -843,9 +870,16 @@ impl qobject::HermesApp {
                 }
                 let has_images = pending.iter().any(|a| a.kind == attachments::Kind::Image);
                 let prompt = attachments::compose_prompt(&text, &refs, has_images);
-                gateway
+                let submitted = gateway
                     .request("prompt.submit", json!({ "session_id": live, "text": prompt, "profile": profile }))
                     .await?;
+                if let Some(row_id) = submitted.get("user_row_id").and_then(Value::as_i64) {
+                    let _ = qt.queue(move |mut app| {
+                        if app.rust().generation == generation {
+                            app.as_mut().user_row_id(row_id as i32);
+                        }
+                    });
+                }
                 Ok(())
             }
             .await;
@@ -1256,6 +1290,84 @@ impl qobject::HermesApp {
     pub fn install_screen(mut self: Pin<&mut Self>) {
         self.as_mut().set_screen_log(q(""));
         self.display_call("display.install", json!({}));
+    }
+
+    /// Both usage shapes: `Usage` (context_used/max) and the
+    /// `session.usage` tick (context_tokens/length).
+    fn apply_usage(mut self: Pin<&mut Self>, u: &Value) {
+        let num = |keys: &[&str]| keys.iter().find_map(|k| u.get(*k).and_then(Value::as_f64));
+        let used = num(&["context_used", "context_tokens"]);
+        let max = num(&["context_max", "context_length", "config_context_length"]);
+        let Some(used) = used else { return };
+        let max = max.unwrap_or(0.0);
+        let percent = num(&["context_percent"]).unwrap_or(if max > 0.0 { used / max * 100.0 } else { 0.0 });
+        let view = json!({
+            "contextUsed": used,
+            "contextMax": max,
+            "percent": percent,
+            "total": num(&["total", "total_tokens"]).unwrap_or(0.0),
+            "cost": num(&["cost_usd"]).unwrap_or(-1.0),
+        });
+        self.as_mut().set_usage(q(view.to_string()));
+    }
+
+    pub fn steer(mut self: Pin<&mut Self>, text: QString) {
+        let text = text.to_string();
+        let live = self.rust().live_session.clone();
+        if text.trim().is_empty() || live.is_empty() {
+            return;
+        }
+        let profile = self.active_bot().to_string();
+        let echo = text.clone();
+        self.call("session.steer", json!({ "session_id": live, "text": text, "profile": profile }), move |mut app, reply| {
+            let status = reply.get("status").and_then(Value::as_str).unwrap_or("queued").to_string();
+            app.as_mut().steered(q(echo), q(status));
+        });
+    }
+
+    pub fn resend(mut self: Pin<&mut Self>, text: QString, row_id: i32) {
+        let text = text.to_string();
+        let live = self.rust().live_session.clone();
+        if text.trim().is_empty() || live.is_empty() || self.rust().streaming || row_id < 0 {
+            return;
+        }
+        let Some(gateway) = self.rust().gateway.clone() else { return };
+        self.as_mut().set_error(q(""));
+        self.as_mut().user_message(q(&text), q("[]"));
+        self.as_mut().set_streaming(true);
+        let profile = self.active_bot().to_string();
+        let generation = self.rust().generation;
+        let qt = self.qt_thread();
+        runtime().spawn(async move {
+            let result = gateway
+                .request(
+                    "prompt.submit",
+                    json!({
+                        "session_id": live,
+                        "text": text,
+                        "profile": profile,
+                        "truncate_before_row_id": row_id,
+                        "confirm_truncate": true,
+                    }),
+                )
+                .await;
+            let _ = qt.queue(move |mut app| {
+                if app.rust().generation != generation {
+                    return;
+                }
+                match result {
+                    Ok(reply) => {
+                        if let Some(id) = reply.get("user_row_id").and_then(Value::as_i64) {
+                            app.as_mut().user_row_id(id as i32);
+                        }
+                    }
+                    Err(e) => {
+                        app.as_mut().set_streaming(false);
+                        app.as_mut().set_error(q(e));
+                    }
+                }
+            });
+        });
     }
 
     pub fn answer_request(self: Pin<&mut Self>, id: QString, result: QString) {
