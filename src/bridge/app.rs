@@ -1007,7 +1007,7 @@ impl qobject::HermesApp {
     }
 
     pub fn paste_clipboard(mut self: Pin<&mut Self>) -> bool {
-        match attachments::paste_clipboard(&attachments::scratch_dir()) {
+        match attachments::paste_clipboard(&QtClipboard, &attachments::scratch_dir()) {
             Ok(attachments::Pasted::File(path)) => {
                 self.add_paths(vec![path]);
                 true
@@ -1460,6 +1460,21 @@ impl cxx_qt::Initialize for qobject::HermesApp {
     }
 }
 
+/// The clipboard as Qt sees it; safe to read even when this app owns it.
+struct QtClipboard;
+
+impl attachments::Clipboard for QtClipboard {
+    fn formats(&self) -> Vec<String> {
+        super::clipboard::clipboard_formats()
+    }
+    fn data(&self, format: &str) -> Vec<u8> {
+        super::clipboard::clipboard_data(format)
+    }
+    fn text(&self) -> String {
+        super::clipboard::clipboard_text()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1481,3 +1496,4 @@ mod tests {
         assert_eq!(rows[2]["name"], "web_search");
     }
 }
+

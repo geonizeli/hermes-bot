@@ -1,5 +1,5 @@
 //! Files and images attached to a message: picking (xdg portal), pasting
-//! (Wayland clipboard via wl-paste), uploading to the Bot Chat, and the
+//! (the clipboard, read by the bridge), uploading to the Bot Chat, and the
 //! `@image:` / `@file:` references Hermes keeps in the transcript.
 //!
 //! A remote dashboard has no multipart upload route, so everything travels as
@@ -195,45 +195,41 @@ pub enum Pasted {
     Nothing,
 }
 
-/// Reads the Wayland clipboard with wl-paste (part of every Omarchy install).
-pub fn paste_clipboard(dir: &Path) -> Result<Pasted, String> {
-    let types = std::process::Command::new("wl-paste")
-        .arg("--list-types")
-        .output()
-        .map_err(|e| format!("Couldn't read the clipboard (wl-paste): {e}"))?;
-    let types = String::from_utf8_lossy(&types.stdout).to_string();
+/// What the clipboard offers, read by the caller (the bridge, through Qt).
+pub trait Clipboard {
+    fn formats(&self) -> Vec<String>;
+    fn data(&self, format: &str) -> Vec<u8>;
+    fn text(&self) -> String;
+}
+
+/// Turns images and long texts on the clipboard into files to attach.
+pub fn paste_clipboard(clipboard: &impl Clipboard, dir: &Path) -> Result<Pasted, String> {
+    let types = clipboard.formats();
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
     for (mime, ext) in [("image/png", "png"), ("image/jpeg", "jpg"), ("image/webp", "webp"), ("image/gif", "gif")] {
-        if types.lines().any(|t| t.trim() == mime) {
-            let out = std::process::Command::new("wl-paste")
-                .args(["--type", mime])
-                .output()
-                .map_err(|e| format!("Couldn't read the clipboard image: {e}"))?;
-            if out.stdout.is_empty() {
+        if types.iter().any(|t| t.trim() == mime) {
+            let bytes = clipboard.data(mime);
+            if bytes.is_empty() {
                 break;
             }
             let path = dir.join(format!("pasted-image-{stamp}.{ext}"));
-            std::fs::write(&path, &out.stdout).map_err(|e| e.to_string())?;
+            std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
             return Ok(Pasted::File(path));
         }
     }
-    if types.lines().any(|t| t.starts_with("text/plain") || t == "UTF8_STRING" || t == "TEXT") {
-        let out = std::process::Command::new("wl-paste")
-            .args(["--no-newline", "--type", "text/plain"])
-            .output()
-            .map_err(|e| format!("Couldn't read the clipboard: {e}"))?;
-        let text = String::from_utf8_lossy(&out.stdout);
-        if text.chars().count() > LARGE_PASTE_CHARS {
-            let path = dir.join(format!("pasted_content_{stamp}.txt"));
-            std::fs::write(&path, text.as_bytes()).map_err(|e| e.to_string())?;
-            return Ok(Pasted::File(path));
-        }
-        return Ok(Pasted::Text);
+    let text = clipboard.text();
+    if text.is_empty() {
+        return Ok(Pasted::Nothing);
     }
-    Ok(Pasted::Nothing)
+    if text.chars().count() > LARGE_PASTE_CHARS {
+        let path = dir.join(format!("pasted_content_{stamp}.txt"));
+        std::fs::write(&path, text.as_bytes()).map_err(|e| e.to_string())?;
+        return Ok(Pasted::File(path));
+    }
+    Ok(Pasted::Text)
 }
 
 /// Opens the desktop's file chooser through the xdg portal.
@@ -299,5 +295,42 @@ mod tests {
         assert_eq!(refs.len(), 2);
         assert_eq!(refs[0]["kind"], "file");
         assert_eq!(refs[1]["name"], "a.png");
+    }
+
+    struct FakeClipboard {
+        formats: Vec<&'static str>,
+        data: Vec<u8>,
+        text: String,
+    }
+
+    impl Clipboard for FakeClipboard {
+        fn formats(&self) -> Vec<String> {
+            self.formats.iter().map(|f| f.to_string()).collect()
+        }
+        fn data(&self, _format: &str) -> Vec<u8> {
+            self.data.clone()
+        }
+        fn text(&self) -> String {
+            self.text.clone()
+        }
+    }
+
+    #[test]
+    fn pastes_images_long_texts_and_plain_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = FakeClipboard { formats: vec!["image/png"], data: b"\x89PNG".to_vec(), text: String::new() };
+        let Ok(Pasted::File(path)) = paste_clipboard(&image, dir.path()) else { panic!("image not pasted") };
+        assert_eq!(path.extension().unwrap(), "png");
+        assert_eq!(std::fs::read(&path).unwrap(), b"\x89PNG");
+
+        let long = FakeClipboard { formats: vec!["text/plain"], data: vec![], text: "x".repeat(LARGE_PASTE_CHARS + 1) };
+        let Ok(Pasted::File(path)) = paste_clipboard(&long, dir.path()) else { panic!("long text not pasted") };
+        assert_eq!(path.extension().unwrap(), "txt");
+
+        let short = FakeClipboard { formats: vec!["text/plain"], data: vec![], text: "hi".into() };
+        assert!(matches!(paste_clipboard(&short, dir.path()), Ok(Pasted::Text)));
+
+        let empty = FakeClipboard { formats: vec![], data: vec![], text: String::new() };
+        assert!(matches!(paste_clipboard(&empty, dir.path()), Ok(Pasted::Nothing)));
     }
 }

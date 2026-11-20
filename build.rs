@@ -1,6 +1,7 @@
 use cxx_qt_build::{CxxQtBuilder, QmlModule};
 
 fn main() {
+    println!("cargo:rerun-if-changed=src/cpp/hermes_clipboard.h");
     CxxQtBuilder::new_qml_module(QmlModule::new("HermesBot").qml_files([
         "qml/Main.qml",
         "qml/BotAvatar.qml",
@@ -19,6 +20,12 @@ fn main() {
     ]))
     .qt_module("Quick")
     .qt_module("QuickControls2")
-    .files(["src/bridge/theme.rs", "src/bridge/app.rs", "src/bridge/screen.rs"])
+    .include_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src/cpp"))
+    .files([
+        "src/bridge/theme.rs",
+        "src/bridge/app.rs",
+        "src/bridge/screen.rs",
+        "src/bridge/clipboard.rs",
+    ])
     .build();
 }
