@@ -42,7 +42,7 @@ as close as possible to the Grok chat experience.
 | Area | What it does |
 |---|---|
 | Servers | Add a server by URL; the app probes it and shows its providers. Sign in with OAuth (system browser) or a password (native form). Tokens go to the Secret Service keyring (`keyring` crate); the server list lives in `~/.config/hermes-bot/servers.json`. |
-| Bots | Bot picker for the server's profiles, showing avatar, display name and description. The last bot used is remembered. |
+| Bots | Bot picker for the server's profiles, showing avatar, display name and description. The last bot used is remembered. Edit profile (right-click a bot, or click its name in the header): title, description and avatar (classic shapes, blobatar faces, colors, upload, generate, petdex pet), as the official desktop's dialog minus Advanced. |
 | Sidebar | Grok-style: new chat, search, history grouped by Today, Yesterday, Previous 7 days and Older, plus rename, delete and pin. Collapsible. |
 | Empty state | Centered greeting and one large rounded composer. |
 | Conversation | User turns in bubbles on the right; assistant turns full width as Markdown with code blocks. Streaming with a typing cursor. A collapsible "Thought for N s" block for reasoning. Compact tool-call chips that expand to show args and result. Copy and regenerate under each answer. |

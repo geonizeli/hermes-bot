@@ -17,6 +17,8 @@ fn main() {
         "qml/Sidebar.qml",
         "qml/SetupDialog.qml",
         "qml/RequestDialog.qml",
+        "qml/EditBotDialog.qml",
+        "qml/PetPicker.qml",
     ]))
     .qt_module("Quick")
     .qt_module("QuickControls2")

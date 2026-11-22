@@ -50,12 +50,14 @@ ApplicationWindow {
             bots: win.bots
             servers: win.servers
             onManageServers: setupDialog.open()
+            onEditBot: bot => editBotDialog.open_(bot)
         }
 
         ChatView {
             Layout.fillWidth: true
             Layout.fillHeight: true
             bot: win.activeBot
+            onEditBot: bot => editBotDialog.open_(bot)
         }
     }
 
@@ -63,6 +65,11 @@ ApplicationWindow {
         id: setupDialog
         anchors.centerIn: parent
         servers: win.servers
+    }
+
+    EditBotDialog {
+        id: editBotDialog
+        anchors.centerIn: parent
     }
 
     RequestDialog {

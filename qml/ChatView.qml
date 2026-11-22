@@ -9,8 +9,10 @@ import HermesBot
 Item {
     id: view
     property var bot: null
+    signal editBot(var bot)
     readonly property string botName: bot ? bot.displayName : "the bot"
     readonly property string botAvatar: bot && bot.avatar ? bot.avatar : ""
+    readonly property bool botAvatarFace: bot ? bot.avatarFace === true : false
     readonly property bool empty: messages.count === 0
     // The jobs panel docks beside the chat when there's room, and slides over
     // it in a narrow window rather than squeezing the conversation.
@@ -221,12 +223,28 @@ Item {
                 anchors.leftMargin: 20
                 anchors.rightMargin: 20
                 spacing: 10
-                BotAvatar { name: view.botName; source: view.botAvatar; size: 28 }
-                Label {
-                    text: view.botName
-                    color: Theme.foreground
-                    font.pixelSize: 15
-                    font.weight: Font.DemiBold
+                // Who: clicking opens the bot's profile editor.
+                Row {
+                    spacing: 10
+                    BotAvatar {
+                        anchors.verticalCenter: parent.verticalCenter
+                        name: view.botName
+                        source: view.botAvatar
+                        face: view.botAvatarFace
+                        size: 28
+                    }
+                    Label {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: view.botName
+                        color: Theme.foreground
+                        font.pixelSize: 15
+                        font.weight: Font.DemiBold
+                    }
+                    HoverHandler { id: identityHover; cursorShape: Qt.PointingHandCursor }
+                    TapHandler { onTapped: view.editBot(view.bot) }
+                    ToolTip.visible: identityHover.hovered
+                    ToolTip.delay: 500
+                    ToolTip.text: "Edit profile"
                 }
                 Label {
                     Layout.fillWidth: true
@@ -745,6 +763,7 @@ Item {
                     anchors.horizontalCenter: parent.horizontalCenter
                     name: view.botName
                     source: view.botAvatar
+                    face: view.botAvatarFace
                     size: 64
                     visible: view.bot !== null
                 }

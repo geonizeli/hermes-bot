@@ -13,6 +13,7 @@ Rectangle {
     // Bots with a turn running; their chats can be left and come back to.
     readonly property var busyBots: JSON.parse(HermesApp.busyBots || "[]")
     signal manageServers()
+    signal editBot(var bot)
 
     Rectangle {
         anchors.right: parent.right
@@ -92,7 +93,7 @@ Rectangle {
                     anchors.rightMargin: 16
                     spacing: 12
 
-                    BotAvatar { name: row.modelData.displayName; source: row.modelData.avatar || ""; size: 38 }
+                    BotAvatar { name: row.modelData.displayName; source: row.modelData.avatar || ""; face: row.modelData.avatarFace === true; size: 38 }
 
                     ColumnLayout {
                         Layout.fillWidth: true
@@ -136,6 +137,17 @@ Rectangle {
                 TapHandler {
                     enabled: !row.active
                     onTapped: HermesApp.selectBot(row.modelData.name)
+                }
+                TapHandler {
+                    acceptedButtons: Qt.RightButton
+                    onTapped: rowMenu.popup()
+                }
+                Menu {
+                    id: rowMenu
+                    MenuItem {
+                        text: "Edit profile…"
+                        onTriggered: sidebar.editBot(row.modelData)
+                    }
                 }
             }
 

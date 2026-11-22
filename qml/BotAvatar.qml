@@ -3,13 +3,15 @@ import QtQuick.Controls
 import QtQuick.Effects
 import HermesBot
 
-// A bot's avatar from the server, cropped to a circle. Until it loads, or
-// when the bot has none, its initial in a circle tinted from its name so each
-// bot keeps the same color.
+// A bot's avatar from the server: a picture cropped to a circle, or a drawn
+// face shown as it is. Until it loads, or when the bot has none, its initial
+// in a circle tinted from its name so each bot keeps the same color.
 Rectangle {
     id: avatar
     property string name: ""
     property string source: ""
+    // The avatar is a drawn face on a transparent background: no crop.
+    property bool face: false
     property int size: 36
     readonly property bool hasImage: picture.status === Image.Ready
 
@@ -55,9 +57,21 @@ Rectangle {
         layer.enabled: true
     }
 
+    Image {
+        anchors.fill: parent
+        visible: avatar.hasImage && avatar.face
+        source: avatar.face ? avatar.source : ""
+        asynchronous: true
+        fillMode: Image.PreserveAspectFit
+        sourceSize.width: avatar.size * 2
+        sourceSize.height: avatar.size * 2
+        smooth: true
+        mipmap: true
+    }
+
     MultiEffect {
         anchors.fill: parent
-        visible: avatar.hasImage
+        visible: avatar.hasImage && !avatar.face
         source: picture
         maskEnabled: true
         maskSource: mask

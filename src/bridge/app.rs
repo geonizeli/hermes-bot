@@ -232,6 +232,7 @@ use tokio::sync::mpsc;
 
 use crate::backend::auth::{self, RefreshError};
 use crate::backend::botchat::{self, Opened};
+use crate::backend::botedit;
 use crate::backend::cron;
 use crate::backend::{attachments, history, markdown, media};
 use crate::backend::gateway::{Gateway, Incoming, UNAUTHORIZED};
@@ -549,10 +550,12 @@ impl qobject::HermesApp {
             .map(|p| {
                 let name = p.get("name").and_then(Value::as_str).unwrap_or("default");
                 let mut avatar = String::new();
+                let mut avatar_face = false;
                 if p.get("has_avatar").and_then(Value::as_bool).unwrap_or(false) {
                     with_avatar.push(name.to_string());
                     if let Some(file) = media::cached_avatar(&server_id, name) {
                         avatar = file_url(&file);
+                        avatar_face = botedit::is_face_copy(&file);
                     }
                 } else {
                     media::clear_avatar(&server_id, name);
@@ -572,6 +575,7 @@ impl qobject::HermesApp {
                     "isDefault": p.get("is_default").and_then(Value::as_bool).unwrap_or(false),
                     "preview": preview,
                     "avatar": avatar,
+                    "avatarFace": avatar_face,
                 })
             })
             .collect();
@@ -604,10 +608,10 @@ impl qobject::HermesApp {
                 };
                 let data = reply.get("data").and_then(Value::as_str).filter(|_| reply["found"] != false);
                 match data.and_then(|d| media::store_avatar(&server_id, &name, d)) {
-                    Some(file) => found.push((name, file_url(&file))),
+                    Some(file) => found.push((name, file_url(&file), botedit::is_face_copy(&file))),
                     None if reply["found"] == false => {
                         media::clear_avatar(&server_id, &name);
-                        found.push((name, String::new()));
+                        found.push((name, String::new(), false));
                     }
                     None => {}
                 }
@@ -618,10 +622,11 @@ impl qobject::HermesApp {
                 }
                 let Ok(Value::Array(mut bots)) = serde_json::from_str::<Value>(&app.bots().to_string()) else { return };
                 let mut changed = false;
-                for (name, url) in found {
+                for (name, url, face) in found {
                     for bot in bots.iter_mut().filter(|b| b["name"] == name.as_str()) {
                         if bot["avatar"] != url.as_str() {
                             bot["avatar"] = json!(url);
+                            bot["avatarFace"] = json!(face);
                             changed = true;
                         }
                     }

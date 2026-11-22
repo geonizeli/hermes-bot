@@ -409,3 +409,44 @@ mod tests {
         assert!(generate_prompt("", "work", "", "").contains("named \"work\""));
     }
 }
+
+/// Renames the `default` bot and back, against the real server:
+/// `HERMES_BOT_EDIT_LIVE=1 cargo test edit_live -- --ignored --nocapture`.
+#[cfg(test)]
+mod live {
+    use tokio::sync::mpsc;
+
+    use super::*;
+    use crate::backend::store;
+
+    #[tokio::test]
+    #[ignore]
+    async fn edit_live() {
+        if std::env::var("HERMES_BOT_EDIT_LIVE").is_err() {
+            return;
+        }
+        let config = store::load(&store::config_path()).unwrap();
+        let server = config.server(config.active_server.as_deref().unwrap()).unwrap().clone();
+        let mut tokens = store::load_tokens(&server.id).expect("signed in");
+        if tokens.expires_soon() {
+            tokens = crate::backend::auth::refresh(&server.url, &tokens).await.ok().expect("refresh");
+            store::save_tokens(&server.id, &tokens).unwrap();
+        }
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let gateway = Gateway::connect(&server.url, &tokens.access_token, tx).await.unwrap();
+
+        let row = read_row(&gateway, "default").await.unwrap();
+        println!("before: title={:?} revision={:?}", roster::meta(&row).get("title"), roster::meta_revision(&row));
+        let opened = opening_look(&row, None);
+        let renamed = Look { title: "Hermes Live Test".into(), ..opened.clone() };
+        save(&gateway, "default", &opened, &renamed).await.unwrap();
+        let row = read_row(&gateway, "default").await.unwrap();
+        println!("after: name={} revision={:?}", roster::display_name(&row), roster::meta_revision(&row));
+        assert_eq!(roster::display_name(&row), "Hermes Live Test");
+
+        save(&gateway, "default", &renamed, &opened).await.unwrap();
+        let row = read_row(&gateway, "default").await.unwrap();
+        println!("restored: name={} meta={}", roster::display_name(&row), roster::meta(&row));
+        assert_eq!(roster::display_name(&row), "Hermes");
+    }
+}
