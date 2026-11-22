@@ -4,8 +4,8 @@ import QtQuick.Layouts
 import HermesBot
 
 // The Pet tab: browse the petdex gallery and use a pet's first frame as the
-// bot's picture. The gallery has thousands of pets, so tiles are shown 24 at
-// a time and grow as the list scrolls; thumbnails are cropped by the server.
+// bot's picture. The gallery has thousands of pets, so tiles are shown a page
+// at a time; thumbnails are cropped by the server and fetched per page.
 ColumnLayout {
     id: picker
     spacing: 8
@@ -19,7 +19,10 @@ ColumnLayout {
     property bool loaded: false
     property string error: ""
     property string selectedSlug: ""
-    property int limit: 24
+    readonly property int columns: 3
+    readonly property int rows: 4
+    readonly property int pageSize: columns * rows
+    property int page: 0
     // slug -> file URL ("" while loading).
     property var thumbs: ({})
 
@@ -28,12 +31,17 @@ ColumnLayout {
         return q.length === 0 ? pets
              : pets.filter(p => p.name.toLowerCase().indexOf(q) >= 0 || p.slug.indexOf(q) >= 0)
     }
-    readonly property var visiblePets: ranked.slice(0, limit)
+    readonly property int pageCount: Math.max(1, Math.ceil(ranked.length / pageSize))
+    readonly property var visiblePets: ranked.slice(page * pageSize, (page + 1) * pageSize)
+
+    function goTo(p) {
+        page = Math.max(0, Math.min(p, pageCount - 1))
+    }
 
     function reset() {
         selectedSlug = ""
         search.text = ""
-        limit = 24
+        page = 0
         error = ""
     }
 
@@ -121,7 +129,7 @@ ColumnLayout {
             id: search
             Layout.fillWidth: true
             placeholderText: "Search " + picker.pets.length + " pets…"
-            onTextChanged: picker.limit = 24
+            onTextChanged: picker.page = 0
         }
         Button {
             Layout.alignment: Qt.AlignHCenter
@@ -145,18 +153,12 @@ ColumnLayout {
         GridView {
             id: grid
             Layout.fillWidth: true
-            Layout.preferredHeight: 220
+            Layout.preferredHeight: cellHeight * picker.rows
             visible: picker.ranked.length > 0
-            clip: true
-            cellWidth: Math.floor(width / 3)
+            interactive: false
+            cellWidth: Math.floor(width / picker.columns)
             cellHeight: 72
             model: picker.visiblePets
-            boundsBehavior: Flickable.StopAtBounds
-            ScrollBar.vertical: ScrollBar {}
-            onContentYChanged: {
-                if (contentY + height >= contentHeight - 120 && picker.limit < picker.ranked.length)
-                    picker.limit = Math.min(picker.limit + 24, picker.ranked.length)
-            }
 
             delegate: Item {
                 id: cell
@@ -219,13 +221,30 @@ ColumnLayout {
             }
         }
 
-        Label {
+        RowLayout {
             Layout.fillWidth: true
-            visible: picker.limit < picker.ranked.length
-            horizontalAlignment: Text.AlignHCenter
-            text: "Scroll for more (" + picker.limit + " of " + picker.ranked.length + ")"
-            color: Theme.muted
-            font.pixelSize: 10
+            visible: picker.pageCount > 1
+            spacing: 4
+
+            Button {
+                text: "‹ Prev"
+                flat: true
+                enabled: picker.page > 0
+                onClicked: picker.goTo(picker.page - 1)
+            }
+            Label {
+                Layout.fillWidth: true
+                horizontalAlignment: Text.AlignHCenter
+                text: "Page " + (picker.page + 1) + " of " + picker.pageCount
+                color: Theme.muted
+                font.pixelSize: 11
+            }
+            Button {
+                text: "Next ›"
+                flat: true
+                enabled: picker.page < picker.pageCount - 1
+                onClicked: picker.goTo(picker.page + 1)
+            }
         }
     }
 }
