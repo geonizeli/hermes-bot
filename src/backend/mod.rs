@@ -2,6 +2,7 @@ pub mod attachments;
 pub mod auth;
 pub mod botchat;
 pub mod cron;
+pub mod face;
 pub mod gateway;
 pub mod history;
 pub mod markdown;
