@@ -87,10 +87,17 @@ Item {
 
     // Stick to the bottom while the user is there; Markdown rows settle their
     // height after layout, so follow content growth rather than scroll once.
+    // Scrolling up lets go until the user comes back down.
     property bool follow: true
+    // For what the user did (sending, opening a chat): always go down.
     function scrollToEnd() {
         follow = true
         Qt.callLater(conversation.positionViewAtEnd)
+    }
+    // For what the bot streams in: only when already following.
+    function keepAtEnd() {
+        if (follow)
+            Qt.callLater(conversation.positionViewAtEnd)
     }
 
     Connections {
@@ -128,14 +135,14 @@ Item {
             view.ensureAssistantRow()
             view.closeThinking()
             messages.setProperty(view.assistantRow, "text", messages.get(view.assistantRow).text + text)
-            view.scrollToEnd()
+            view.keepAtEnd()
         }
         function onReasoningDelta(text) {
             view.ensureAssistantRow()
             if (view.thinkingSince === 0 && messages.get(view.assistantRow).text.length === 0)
                 view.thinkingSince = Date.now()
             messages.setProperty(view.assistantRow, "reasoning", messages.get(view.assistantRow).reasoning + text)
-            view.scrollToEnd()
+            view.keepAtEnd()
         }
         function onToolStarted(json) {
             const tool = JSON.parse(json)
@@ -145,7 +152,7 @@ Item {
             view.addRow(Object.assign({ role: "tool", done: false }, tool))
             // Text after a tool call starts a new answer below it.
             view.assistantRow = -1
-            view.scrollToEnd()
+            view.keepAtEnd()
         }
         function onToolFinished(json) {
             const tool = JSON.parse(json)
@@ -175,7 +182,7 @@ Item {
                 messages.setProperty(view.todoRow, "todos", json)
             } else {
                 view.todoRow = view.addRow({ role: "todos", todos: json })
-                view.scrollToEnd()
+                view.keepAtEnd()
             }
         }
         function onTurnFinished(status, text, error) {
@@ -194,7 +201,7 @@ Item {
             else if (status === "interrupted")
                 view.addRow({ role: "info", text: "Stopped" })
             view.assistantRow = -1
-            view.scrollToEnd()
+            view.keepAtEnd()
         }
     }
 
@@ -329,8 +336,9 @@ Item {
             boundsBehavior: Flickable.StopAtBounds
             onContentHeightChanged: if (view.follow) Qt.callLater(positionViewAtEnd)
             onHeightChanged: if (view.follow) Qt.callLater(positionViewAtEnd)
+            // Wheel, touchpad and drag all count as movement.
+            onMovementStarted: view.follow = false
             onMovementEnded: view.follow = atYEnd
-            onFlickEnded: view.follow = atYEnd
 
             add: Transition {
                 enabled: view.animateAdds
@@ -346,7 +354,10 @@ Item {
                 easing.type: Easing.OutCubic
                 running: false
             }
-            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+            ScrollBar.vertical: ScrollBar {
+                policy: ScrollBar.AsNeeded
+                onPressedChanged: view.follow = pressed ? false : conversation.atYEnd
+            }
 
             delegate: DelegateChooser {
                 role: "role"
@@ -752,6 +763,32 @@ Item {
                     color: Theme.muted
                     font.pixelSize: 15
                 }
+            }
+
+            // Scrolled up: a way back down to the latest message.
+            Rectangle {
+                id: jumpDown
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: 16
+                width: 36
+                height: 36
+                radius: Theme.radius
+                color: jumpHover.hovered ? Theme.raised : Theme.surface
+                border.width: 1
+                border.color: Theme.border
+                readonly property bool wanted: !view.follow && !view.empty && !HermesApp.chatLoading
+                visible: opacity > 0
+                opacity: wanted ? 1 : 0
+                Behavior on opacity { NumberAnimation { duration: 160 } }
+                Label {
+                    anchors.centerIn: parent
+                    text: "↓"
+                    color: HermesApp.streaming ? Theme.accent : Theme.foreground
+                    font.pixelSize: 18
+                }
+                HoverHandler { id: jumpHover; cursorShape: Qt.PointingHandCursor }
+                TapHandler { enabled: jumpDown.wanted; onTapped: view.scrollToEnd() }
             }
         }
         }

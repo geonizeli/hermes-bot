@@ -25,7 +25,10 @@ pub mod qobject {
         #[qproperty(QString, bots)]
         #[qproperty(QString, active_bot, cxx_name = "activeBot")]
         #[qproperty(QString, active_session, cxx_name = "activeSession")]
+        /// The open chat has a turn running.
         #[qproperty(bool, streaming)]
+        /// JSON array of the bots with a turn running, open or not.
+        #[qproperty(QString, busy_bots, cxx_name = "busyBots")]
         /// True while connecting or opening a bot's chat; the view shows a spinner.
         #[qproperty(bool, chat_loading, cxx_name = "chatLoading")]
         /// JSON array of the active bot's scheduled jobs.
@@ -201,6 +204,7 @@ pub struct AppRust {
     active_bot: QString,
     active_session: QString,
     streaming: bool,
+    busy_bots: QString,
     chat_loading: bool,
     jobs: QString,
     jobs_loading: bool,
@@ -224,6 +228,9 @@ pub struct AppRust {
     /// Each bot's Bot Chat as the roster reports it (`canonical_session`),
     /// the fallback when a lookup answers empty.
     roster_chats: HashMap<String, String>,
+    /// Turns in flight, live session id → bot, including ones whose chat
+    /// isn't open; switching bots leaves them running.
+    running: HashMap<String, String>,
     pending: Vec<attachments::Attachment>,
     next_attachment: u64,
     /// Server path → local file URL.
@@ -319,6 +326,29 @@ impl qobject::HermesApp {
         self.set_status(q(text));
     }
 
+    fn publish_busy(mut self: Pin<&mut Self>) {
+        let mut bots: Vec<&String> = self.rust().running.values().collect();
+        bots.sort();
+        bots.dedup();
+        let json = json!(bots).to_string();
+        self.as_mut().set_busy_bots(q(json));
+    }
+
+    fn mark_running(mut self: Pin<&mut Self>, live: &str, profile: &str) {
+        if live.is_empty() {
+            return;
+        }
+        self.as_mut().rust_mut().running.insert(live.to_string(), profile.to_string());
+        self.as_mut().publish_busy();
+    }
+
+    /// Ends the turn on `live`, open or in the background.
+    fn mark_finished(mut self: Pin<&mut Self>, live: &str) -> Option<String> {
+        let profile = self.as_mut().rust_mut().running.remove(live);
+        self.as_mut().publish_busy();
+        profile
+    }
+
     fn disconnect(mut self: Pin<&mut Self>) {
         let mut rust = self.as_mut().rust_mut();
         rust.generation += 1;
@@ -328,6 +358,8 @@ impl qobject::HermesApp {
         session::set(None);
         rust.live_session.clear();
         rust.roster_chats.clear();
+        rust.running.clear();
+        self.as_mut().publish_busy();
         self.as_mut().set_connected(false);
         self.as_mut().set_streaming(false);
         self.as_mut().set_chat_loading(false);
@@ -470,6 +502,15 @@ impl qobject::HermesApp {
                     return;
                 }
                 match kind.as_str() {
+                    // A turn finishing in a bot whose chat isn't open.
+                    "message.complete" | "error" if !ours => {
+                        if let Some(profile) = self.as_mut().mark_finished(&session_id) {
+                            let final_text = text("text");
+                            if kind == "message.complete" && !final_text.trim().is_empty() {
+                                self.as_mut().set_bot_preview(&profile, &final_text);
+                            }
+                        }
+                    }
                     _ if !ours => {}
                     "session.info" => {
                         if payload.is_object() {
@@ -539,6 +580,8 @@ impl qobject::HermesApp {
                         }
                     }
                     "message.complete" => {
+                        let live = self.rust().live_session.clone();
+                        self.as_mut().mark_finished(&live);
                         self.as_mut().set_streaming(false);
                         if let Some(usage) = payload.get("usage").filter(|u| u.is_object()) {
                             self.as_mut().apply_usage(usage);
@@ -547,11 +590,14 @@ impl qobject::HermesApp {
                         let error = Some(text("error")).filter(|s| !s.is_empty()).unwrap_or_else(|| text("failure_reason"));
                         let final_text = text("text");
                         if !final_text.trim().is_empty() {
-                            self.as_mut().set_bot_preview(&final_text);
+                            let active = self.active_bot().to_string();
+                            self.as_mut().set_bot_preview(&active, &final_text);
                         }
                         self.as_mut().turn_finished(q(status), q(final_text), q(error));
                     }
                     "error" => {
+                        let live = self.rust().live_session.clone();
+                        self.as_mut().mark_finished(&live);
                         self.as_mut().set_streaming(false);
                         self.as_mut().set_error(q(text("message")));
                     }
@@ -563,6 +609,8 @@ impl qobject::HermesApp {
             }
             Incoming::Closed(reason) => {
                 self.as_mut().rust_mut().gateway = None;
+                self.as_mut().rust_mut().running.clear();
+                self.as_mut().publish_busy();
                 session::set(None);
                 self.as_mut().set_connected(false);
                 self.as_mut().set_streaming(false);
@@ -718,12 +766,11 @@ impl qobject::HermesApp {
         self.as_mut().open_bot_chat();
     }
 
-    /// Shows `text` as the active bot's last message in the sidebar.
-    fn set_bot_preview(mut self: Pin<&mut Self>, text: &str) {
-        let active = self.active_bot().to_string();
+    /// Shows `text` as a bot's last message in the sidebar.
+    fn set_bot_preview(mut self: Pin<&mut Self>, profile: &str, text: &str) {
         let Ok(Value::Array(mut bots)) = serde_json::from_str::<Value>(&self.bots().to_string()) else { return };
         let preview: String = text.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(80).collect();
-        for bot in bots.iter_mut().filter(|b| b["name"] == active.as_str()) {
+        for bot in bots.iter_mut().filter(|b| b["name"] == profile) {
             bot["preview"] = json!(preview);
         }
         self.as_mut().set_bots(q(Value::Array(bots).to_string()));
@@ -751,7 +798,10 @@ impl qobject::HermesApp {
             }
             _ => {}
         }
-        if opened.running {
+        let live = self.rust().live_session.clone();
+        if opened.running || self.rust().running.contains_key(&live) {
+            let profile = self.active_bot().to_string();
+            self.as_mut().mark_running(&live, &profile);
             self.as_mut().set_streaming(true);
         }
     }
@@ -759,9 +809,9 @@ impl qobject::HermesApp {
     /// Opens the active bot's Bot Chat. A bot that has none yet shows an empty
     /// chat; the Bot Chat is created when the first message is sent.
     fn open_bot_chat(mut self: Pin<&mut Self>) {
-        if self.rust().streaming {
-            return;
-        }
+        // A running turn carries on in the background; reopening the bot
+        // picks it back up.
+        self.as_mut().set_streaming(false);
         self.as_mut().clear_chat();
         self.as_mut().set_jobs(q("[]"));
         self.as_mut().set_jobs_error(q(""));
@@ -834,9 +884,11 @@ impl qobject::HermesApp {
         let profile = self.active_bot().to_string();
         let roster = self.rust().roster_chats.get(&profile).cloned();
         let live = self.rust().live_session.clone();
+        self.as_mut().mark_running(&live, &profile);
         let generation = self.rust().generation;
         let qt = self.qt_thread();
         runtime().spawn(async move {
+            let mut sent_on = live.clone();
             let result: Result<(), String> = async {
                 let live = if live.is_empty() {
                     let opened = botchat::open_or_create(&gateway, &profile, roster.as_deref()).await?;
@@ -844,8 +896,15 @@ impl qobject::HermesApp {
                     // Queued before the prompt goes out, so the Qt thread knows the
                     // session id before any of its events arrive.
                     let echo = text.clone();
+                    let profile = profile.clone();
                     let _ = qt.queue(move |mut app| {
                         if app.rust().generation != generation {
+                            return;
+                        }
+                        app.as_mut().mark_running(&opened.live, &profile);
+                        // Switched to another bot meanwhile: the turn runs on
+                        // unseen, and shows when this bot is reopened.
+                        if app.active_bot().to_string() != profile {
                             return;
                         }
                         // The chat already existed (made elsewhere meanwhile): show
@@ -860,6 +919,7 @@ impl qobject::HermesApp {
                 } else {
                     live
                 };
+                sent_on = live.clone();
                 // Images are queued on the session for this prompt; files come
                 // back as @file: references that lead the text.
                 let mut refs = Vec::new();
@@ -874,8 +934,9 @@ impl qobject::HermesApp {
                     .request("prompt.submit", json!({ "session_id": live, "text": prompt, "profile": profile }))
                     .await?;
                 if let Some(row_id) = submitted.get("user_row_id").and_then(Value::as_i64) {
+                    let live = live.clone();
                     let _ = qt.queue(move |mut app| {
-                        if app.rust().generation == generation {
+                        if app.rust().generation == generation && app.rust().live_session == live {
                             app.as_mut().user_row_id(row_id as i32);
                         }
                     });
@@ -886,7 +947,10 @@ impl qobject::HermesApp {
             if let Err(e) = result {
                 let _ = qt.queue(move |mut app| {
                     if app.rust().generation == generation {
-                        app.as_mut().set_streaming(false);
+                        app.as_mut().mark_finished(&sent_on);
+                        if app.active_bot().to_string() == profile {
+                            app.as_mut().set_streaming(false);
+                        }
                         app.as_mut().set_error(q(e));
                     }
                 });
@@ -1336,6 +1400,7 @@ impl qobject::HermesApp {
         self.as_mut().user_message(q(&text), q("[]"));
         self.as_mut().set_streaming(true);
         let profile = self.active_bot().to_string();
+        self.as_mut().mark_running(&live, &profile);
         let generation = self.rust().generation;
         let qt = self.qt_thread();
         runtime().spawn(async move {
@@ -1355,14 +1420,18 @@ impl qobject::HermesApp {
                 if app.rust().generation != generation {
                     return;
                 }
+                let open = app.rust().live_session == live;
                 match result {
                     Ok(reply) => {
-                        if let Some(id) = reply.get("user_row_id").and_then(Value::as_i64) {
+                        if let Some(id) = reply.get("user_row_id").and_then(Value::as_i64).filter(|_| open) {
                             app.as_mut().user_row_id(id as i32);
                         }
                     }
                     Err(e) => {
-                        app.as_mut().set_streaming(false);
+                        app.as_mut().mark_finished(&live);
+                        if open {
+                            app.as_mut().set_streaming(false);
+                        }
                         app.as_mut().set_error(q(e));
                     }
                 }

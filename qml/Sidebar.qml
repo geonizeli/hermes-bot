@@ -10,6 +10,8 @@ Rectangle {
 
     property var bots: []
     property var servers: []
+    // Bots with a turn running; their chats can be left and come back to.
+    readonly property var busyBots: JSON.parse(HermesApp.busyBots || "[]")
     signal manageServers()
 
     Rectangle {
@@ -71,7 +73,7 @@ Rectangle {
                 id: row
                 required property var modelData
                 readonly property bool active: modelData.name === HermesApp.activeBot
-                readonly property bool locked: HermesApp.streaming && !active
+                readonly property bool busy: sidebar.busyBots.indexOf(modelData.name) >= 0
                 width: ListView.view.width
                 height: 60
 
@@ -80,7 +82,7 @@ Rectangle {
                     anchors.leftMargin: 8
                     anchors.rightMargin: 8
                     radius: Theme.radius
-                    color: Qt.alpha(Theme.raised, hover.hovered && !row.locked && !row.active ? 0.5 : 0)
+                    color: Qt.alpha(Theme.raised, hover.hovered && !row.active ? 0.5 : 0)
                     Behavior on color { ColorAnimation { duration: 140 } }
                 }
 
@@ -89,8 +91,6 @@ Rectangle {
                     anchors.leftMargin: 20
                     anchors.rightMargin: 16
                     spacing: 12
-                    opacity: row.locked ? 0.5 : 1
-                    Behavior on opacity { NumberAnimation { duration: 160 } }
 
                     BotAvatar { name: row.modelData.displayName; size: 38 }
 
@@ -107,7 +107,7 @@ Rectangle {
                         }
                         Label {
                             Layout.fillWidth: true
-                            text: row.modelData.preview || row.modelData.description || row.modelData.model
+                            text: row.busy ? "Working…" : (row.modelData.preview || row.modelData.description || row.modelData.model)
                             visible: text.length > 0
                             color: Theme.muted
                             font.pixelSize: 13
@@ -115,11 +115,26 @@ Rectangle {
                             maximumLineCount: 1
                         }
                     }
+
+                    // Pulses while the bot is answering.
+                    Rectangle {
+                        visible: row.busy
+                        width: 8
+                        height: 8
+                        radius: 4
+                        color: Theme.accent
+                        SequentialAnimation on opacity {
+                            running: row.busy
+                            loops: Animation.Infinite
+                            NumberAnimation { from: 1; to: 0.3; duration: 700; easing.type: Easing.InOutSine }
+                            NumberAnimation { from: 0.3; to: 1; duration: 700; easing.type: Easing.InOutSine }
+                        }
+                    }
                 }
 
-                HoverHandler { id: hover; cursorShape: row.locked ? Qt.ArrowCursor : Qt.PointingHandCursor }
+                HoverHandler { id: hover; cursorShape: row.active ? Qt.ArrowCursor : Qt.PointingHandCursor }
                 TapHandler {
-                    enabled: !row.locked && !row.active
+                    enabled: !row.active
                     onTapped: HermesApp.selectBot(row.modelData.name)
                 }
             }
