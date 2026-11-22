@@ -82,6 +82,63 @@ pub async fn fetch(session: &Session, path: &str, profile: &str) -> Result<PathB
     Ok(file)
 }
 
+fn avatar_prefix(server: &str, profile: &str) -> String {
+    let key: String = Sha256::digest(format!("avatar\n{server}\n{profile}").as_bytes())
+        .iter()
+        .take(12)
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    format!("avatar-{key}-")
+}
+
+/// The avatar last saved for a bot, so it shows before the server answers.
+pub fn cached_avatar(server: &str, profile: &str) -> Option<PathBuf> {
+    let prefix = avatar_prefix(server, profile);
+    std::fs::read_dir(cache_dir())
+        .ok()?
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+        .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())
+        .map(|e| e.path())
+}
+
+/// Saves a bot's avatar (a data URL from `profiles.get_asset`). The file name
+/// carries a hash of the image, so a new avatar gets a new URL and Qt's image
+/// cache can't show the old one; older copies are removed.
+pub fn store_avatar(server: &str, profile: &str, data_url: &str) -> Option<PathBuf> {
+    let (mime, bytes) = decode_data_url(data_url)?;
+    let prefix = avatar_prefix(server, profile);
+    let hash: String = Sha256::digest(&bytes).iter().take(8).map(|b| format!("{b:02x}")).collect();
+    let name = format!("{prefix}{hash}.{}", extension_for(&mime));
+    let dir = cache_dir();
+    std::fs::create_dir_all(&dir).ok()?;
+    let file = dir.join(&name);
+    if !file.exists() {
+        std::fs::write(&file, bytes).ok()?;
+    }
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let other = entry.file_name().to_string_lossy().to_string();
+            if other.starts_with(&prefix) && other != name {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+    Some(file)
+}
+
+/// Forgets a bot's avatar after the server says it has none.
+pub fn clear_avatar(server: &str, profile: &str) {
+    let prefix = avatar_prefix(server, profile);
+    if let Ok(entries) = std::fs::read_dir(cache_dir()) {
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with(&prefix) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

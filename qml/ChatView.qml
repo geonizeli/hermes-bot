@@ -10,6 +10,7 @@ Item {
     id: view
     property var bot: null
     readonly property string botName: bot ? bot.displayName : "the bot"
+    readonly property string botAvatar: bot && bot.avatar ? bot.avatar : ""
     readonly property bool empty: messages.count === 0
     // The jobs panel docks beside the chat when there's room, and slides over
     // it in a narrow window rather than squeezing the conversation.
@@ -220,7 +221,7 @@ Item {
                 anchors.leftMargin: 20
                 anchors.rightMargin: 20
                 spacing: 10
-                BotAvatar { name: view.botName; size: 28 }
+                BotAvatar { name: view.botName; source: view.botAvatar; size: 28 }
                 Label {
                     text: view.botName
                     color: Theme.foreground
@@ -743,6 +744,7 @@ Item {
                 BotAvatar {
                     anchors.horizontalCenter: parent.horizontalCenter
                     name: view.botName
+                    source: view.botAvatar
                     size: 64
                     visible: view.bot !== null
                 }

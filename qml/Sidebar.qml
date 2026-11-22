@@ -92,7 +92,7 @@ Rectangle {
                     anchors.rightMargin: 16
                     spacing: 12
 
-                    BotAvatar { name: row.modelData.displayName; size: 38 }
+                    BotAvatar { name: row.modelData.displayName; source: row.modelData.avatar || ""; size: 38 }
 
                     ColumnLayout {
                         Layout.fillWidth: true

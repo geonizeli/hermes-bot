@@ -240,6 +240,10 @@ pub struct AppRust {
     markdown_cache: HashMap<u64, String>,
 }
 
+fn file_url(path: &std::path::Path) -> String {
+    url::Url::from_file_path(path).map(|u| u.to_string()).unwrap_or_default()
+}
+
 fn q(s: impl AsRef<str>) -> QString {
     QString::from(s.as_ref())
 }
@@ -466,10 +470,25 @@ impl qobject::HermesApp {
                         "model": p.get("model").and_then(Value::as_str).unwrap_or_default(),
                         "isDefault": p.get("is_default").and_then(Value::as_bool).unwrap_or(false),
                         "preview": p.pointer("/canonical_session/preview").and_then(Value::as_str).unwrap_or_default(),
+                        "avatar": "",
                     })
                 })
                 .collect();
             let server_id = app.rust().config.active_server.clone().unwrap_or_default();
+            let with_avatar: Vec<String> = profiles
+                .iter()
+                .filter(|p| p.get("has_avatar").and_then(Value::as_bool).unwrap_or(false))
+                .filter_map(|p| p.get("name").and_then(Value::as_str).map(str::to_string))
+                .collect();
+            let mut bots = bots;
+            for bot in bots.iter_mut() {
+                let name = bot["name"].as_str().unwrap_or_default().to_string();
+                if !with_avatar.contains(&name) {
+                    media::clear_avatar(&server_id, &name);
+                } else if let Some(file) = media::cached_avatar(&server_id, &name) {
+                    bot["avatar"] = json!(file_url(&file));
+                }
+            }
             let remembered = app.rust().config.last_bot.get(&server_id).cloned();
             let pick = remembered
                 .filter(|name| bots.iter().any(|b| b["name"] == *name))
@@ -486,6 +505,52 @@ impl qobject::HermesApp {
             app.as_mut().set_bots(q(Value::Array(bots).to_string()));
             app.as_mut().set_active_bot(q(&pick));
             app.as_mut().open_bot_chat();
+            app.as_mut().load_avatars(server_id, with_avatar);
+        });
+    }
+
+    /// Fetches each bot's avatar from the server and swaps it into the roster.
+    fn load_avatars(self: Pin<&mut Self>, server_id: String, names: Vec<String>) {
+        let Some(gateway) = self.rust().gateway.clone() else { return };
+        if names.is_empty() {
+            return;
+        }
+        let generation = self.rust().generation;
+        let qt = self.qt_thread();
+        runtime().spawn(async move {
+            let mut found = Vec::new();
+            for name in names {
+                let Ok(reply) = gateway.request("profiles.get_asset", json!({ "asset": "avatar", "name": name })).await else {
+                    continue;
+                };
+                let data = reply.get("data").and_then(Value::as_str).filter(|_| reply["found"] != false);
+                match data.and_then(|d| media::store_avatar(&server_id, &name, d)) {
+                    Some(file) => found.push((name, file_url(&file))),
+                    None if reply["found"] == false => {
+                        media::clear_avatar(&server_id, &name);
+                        found.push((name, String::new()));
+                    }
+                    None => {}
+                }
+            }
+            let _ = qt.queue(move |mut app| {
+                if app.rust().generation != generation {
+                    return;
+                }
+                let Ok(Value::Array(mut bots)) = serde_json::from_str::<Value>(&app.bots().to_string()) else { return };
+                let mut changed = false;
+                for (name, url) in found {
+                    for bot in bots.iter_mut().filter(|b| b["name"] == name.as_str()) {
+                        if bot["avatar"] != url.as_str() {
+                            bot["avatar"] = json!(url);
+                            changed = true;
+                        }
+                    }
+                }
+                if changed {
+                    app.as_mut().set_bots(q(Value::Array(bots).to_string()));
+                }
+            });
         });
     }
 
@@ -1097,7 +1162,7 @@ impl qobject::HermesApp {
             let result = media::fetch(&session, &path, &profile).await;
             let _ = qt.queue(move |mut app| {
                 if let Ok(file) = result {
-                    let url = url::Url::from_file_path(&file).map(|u| u.to_string()).unwrap_or_default();
+                    let url = file_url(&file);
                     app.as_mut().rust_mut().media_cache.insert(path.clone(), url.clone());
                     app.as_mut().media_ready(q(path), q(url));
                 }
