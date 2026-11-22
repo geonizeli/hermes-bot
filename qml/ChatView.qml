@@ -129,6 +129,32 @@ Item {
             if (view.lastUserIndex >= 0)
                 messages.setProperty(view.lastUserIndex, "rowId", rowId)
         }
+        function onCommandStarted(command) {
+            view.addRow({ role: "command", name: command, done: false })
+            view.scrollToEnd()
+        }
+        // Fills the command's row; a command that printed nothing leaves none.
+        function onCommandOutput(command, text) {
+            for (let i = messages.count - 1; i >= 0; i--) {
+                const row = messages.get(i)
+                if (row.role !== "command" || row.done || row.name !== command)
+                    continue
+                if (text.length > 0) {
+                    messages.setProperty(i, "text", text)
+                    messages.setProperty(i, "done", true)
+                } else {
+                    messages.remove(i)
+                    for (const k of ["assistantRow", "todoRow", "lastUserIndex"])
+                        if (view[k] > i) view[k] -= 1
+                }
+                view.keepAtEnd()
+                return
+            }
+            if (text.length > 0) {
+                view.addRow({ role: "command", name: command, text: text })
+                view.keepAtEnd()
+            }
+        }
         function onSteered(text, status) {
             view.addRow({ role: "info", text: status === "rejected" ? "Couldn't steer: " + text : "↪ " + text })
             view.scrollToEnd()
@@ -682,6 +708,55 @@ Item {
                             color: Theme.danger
                             font.pixelSize: 14
                             wrapMode: Text.Wrap
+                        }
+                    }
+                }
+
+                // A slash command and what it printed.
+                DelegateChoice {
+                    roleValue: "command"
+                    Item {
+                        id: commandRow
+                        required property string name
+                        required property string text
+                        required property bool done
+                        width: ListView.view.width
+                        height: commandBox.height
+                        Rectangle {
+                            id: commandBox
+                            x: (commandRow.width - view.columnWidth) / 2
+                            width: view.columnWidth
+                            height: commandColumn.implicitHeight + 20
+                            radius: Theme.radius
+                            color: Theme.surface
+                            border.width: 1
+                            border.color: Theme.border
+                            Column {
+                                id: commandColumn
+                                x: 12
+                                y: 10
+                                width: parent.width - 24
+                                spacing: 6
+                                Label {
+                                    text: commandRow.name + (commandRow.done ? "" : "  · running…")
+                                    color: Theme.accent
+                                    font.family: "monospace"
+                                    font.pixelSize: 12
+                                }
+                                TextEdit {
+                                    visible: commandRow.text.length > 0
+                                    width: parent.width
+                                    text: commandRow.text
+                                    readOnly: true
+                                    selectByMouse: true
+                                    wrapMode: TextEdit.Wrap
+                                    color: Theme.foreground
+                                    selectionColor: Qt.alpha(Theme.accent, 0.4)
+                                    selectedTextColor: Theme.foreground
+                                    font.family: "monospace"
+                                    font.pixelSize: 12
+                                }
+                            }
                         }
                     }
                 }

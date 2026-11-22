@@ -123,6 +123,10 @@ pub mod qobject {
         fn install_screen(self: Pin<&mut HermesApp>);
         #[qinvokable]
         fn answer_request(self: Pin<&mut HermesApp>, id: QString, result: QString);
+        /// Command menu rows (JSON array of {insert, display, meta, skill}) for
+        /// the composer's text, from the open chat's command set.
+        #[qinvokable]
+        fn slash_suggestions(self: &HermesApp, text: QString) -> QString;
 
         // ── Edit Bot (see bridge/app/editor.rs) ──
         /// JSON {name, look, shapes, kinds, swatches} to open the editor with.
@@ -174,6 +178,18 @@ pub mod qobject {
         /// The stored row id of the message just sent (for edit/regenerate).
         #[qsignal]
         fn user_row_id(self: Pin<&mut HermesApp>, row_id: i32);
+        /// A slash command started; its output follows in `command_output`.
+        #[qsignal]
+        fn command_started(self: Pin<&mut HermesApp>, command: QString);
+        /// What a slash command printed; empty when it printed nothing.
+        #[qsignal]
+        fn command_output(self: Pin<&mut HermesApp>, command: QString, text: QString);
+        /// A command (like /undo) handed back a draft for the message box.
+        #[qsignal]
+        fn prefill(self: Pin<&mut HermesApp>, text: QString);
+        /// `/model`: open the model picker.
+        #[qsignal]
+        fn open_model_picker(self: Pin<&mut HermesApp>);
         #[qsignal]
         fn steered(self: Pin<&mut HermesApp>, text: QString, status: QString);
         #[qsignal]
@@ -236,6 +252,7 @@ use crate::backend::botedit;
 use crate::backend::cron;
 use crate::backend::{attachments, history, markdown, media};
 use crate::backend::gateway::{Gateway, Incoming, UNAUTHORIZED};
+use crate::backend::slash::{self, Directive, Local, Route};
 use crate::backend::{roster, runtime, session};
 use crate::backend::store::{self, Config, Server, Tokens};
 
@@ -289,8 +306,11 @@ pub struct AppRust {
     /// Rendered answers by (text, colours) hash; answers re-render on every
     /// streamed delta, finished ones shouldn't.
     markdown_cache: HashMap<u64, String>,
+    /// Each bot's slash commands, from `commands.catalog`.
+    catalogs: HashMap<String, slash::Catalog>,
 }
 
+mod commands;
 mod editor;
 
 fn file_url(path: &std::path::Path) -> String {
@@ -329,7 +349,8 @@ pub fn transcript_for_view(messages: &[Value]) -> Value {
             r["rowId"] = m.get("row_id").cloned().filter(|v| v.is_i64()).unwrap_or(json!(-1));
             match role {
                 "user" => {
-                    let (text, refs) = attachments::split_refs(&message_text(m));
+                    let raw = message_text(m);
+                    let (text, refs) = attachments::split_refs(&slash::skill_invocation_text(&raw).unwrap_or(raw));
                     if text.trim().is_empty() && refs.is_empty() {
                         return None;
                     }
@@ -415,6 +436,7 @@ impl qobject::HermesApp {
         session::set(None);
         rust.live_session.clear();
         rust.roster_chats.clear();
+        rust.catalogs.clear();
         rust.running.clear();
         self.as_mut().publish_busy();
         self.as_mut().set_connected(false);
@@ -940,6 +962,9 @@ impl qobject::HermesApp {
         }
         self.as_mut().rust_mut().live_session = opened.live;
         self.as_mut().set_active_session(q(&opened.stored));
+        // The chat's own command set adds its workspace's skills.
+        let (profile, live) = (self.active_bot().to_string(), self.rust().live_session.clone());
+        self.as_mut().refresh_commands(&profile, &live);
         match view {
             Some(rows) if !rows.is_empty() => self.as_mut().transcript_loaded(q(Value::Array(rows).to_string())),
             _ if !opened.messages.is_empty() => {
@@ -980,6 +1005,10 @@ impl qobject::HermesApp {
         };
         self.as_mut().set_chat_loading(true);
         let profile = self.active_bot().to_string();
+        // The profile's commands, for the menu before the chat exists.
+        if !self.rust().catalogs.contains_key(&profile) {
+            self.as_mut().refresh_commands(&profile, "");
+        }
         let roster = self.rust().roster_chats.get(&profile).cloned();
         let generation = self.rust().generation;
         let qt = self.qt_thread();
@@ -1016,6 +1045,17 @@ impl qobject::HermesApp {
 
     pub fn send(mut self: Pin<&mut Self>, text: QString) {
         let text = text.to_string();
+        if let Some(command) = slash::parse(&text) {
+            self.as_mut().set_error(q(""));
+            self.run_slash(command);
+            return;
+        }
+        self.submit(text.clone(), text);
+    }
+
+    /// Sends `text` as a prompt with the waiting attachments; the bubble
+    /// shows `echo` (a skill's invocation rather than its expanded body).
+    fn submit(mut self: Pin<&mut Self>, text: String, echo: String) {
         if (text.trim().is_empty() && self.rust().pending.is_empty()) || self.rust().streaming {
             return;
         }
@@ -1028,7 +1068,7 @@ impl qobject::HermesApp {
         self.as_mut().publish_attachments();
         let view: Vec<Value> = pending.iter().map(|a| a.to_view()).collect();
         let echo_attachments = Value::Array(view).to_string();
-        self.as_mut().user_message(q(&text), q(&echo_attachments));
+        self.as_mut().user_message(q(&echo), q(&echo_attachments));
         self.as_mut().set_streaming(true);
         let profile = self.active_bot().to_string();
         let roster = self.rust().roster_chats.get(&profile).cloned();
@@ -1044,7 +1084,7 @@ impl qobject::HermesApp {
                     let live = opened.live.clone();
                     // Queued before the prompt goes out, so the Qt thread knows the
                     // session id before any of its events arrive.
-                    let echo = text.clone();
+                    let echo = echo.clone();
                     let profile = profile.clone();
                     let _ = qt.queue(move |mut app| {
                         if app.rust().generation != generation {

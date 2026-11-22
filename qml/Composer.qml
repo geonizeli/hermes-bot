@@ -63,8 +63,38 @@ Rectangle {
 
     function focusInput() { input.forceActiveFocus() }
 
+    // ---- slash commands ----
+    // The menu lists the chat's commands while the text starts with "/".
+    property var suggestions: []
+    property int suggestionIndex: 0
+    property bool menuDismissed: false
+    readonly property bool menuOpen: suggestions.length > 0 && !menuDismissed && input.activeFocus
+
+    function refreshSuggestions() {
+        const t = input.text
+        if (editing || !t.startsWith("/")) {
+            suggestions = []
+            return
+        }
+        try { suggestions = JSON.parse(HermesApp.slashSuggestions(t)) } catch (e) { suggestions = [] }
+        suggestionIndex = 0
+    }
+    function acceptSuggestion(index) {
+        const s = suggestions[index]
+        if (!s) return
+        input.text = s.insert
+        input.cursorPosition = input.length
+        input.forceActiveFocus()
+    }
+
     function send() {
         const text = input.text
+        // Commands go through send() even while the bot answers (/stop, /usage…).
+        if (!editing && /^\/[^\s\/]+(\s|$)/.test(text)) {
+            HermesApp.send(text)
+            input.text = ""
+            return
+        }
         if (HermesApp.streaming) {
             // Typing while the bot works steers it; an empty send stops it.
             if (text.trim().length > 0) {
@@ -222,14 +252,41 @@ Rectangle {
                 focus: true
                 background: null
                 padding: 4
+                onTextChanged: {
+                    composer.menuDismissed = false
+                    composer.refreshSuggestions()
+                }
                 // Images and long texts on the clipboard become attachments.
                 Keys.onPressed: event => {
                     if (event.matches(StandardKey.Paste) && HermesApp.pasteClipboard())
                         event.accepted = true
                 }
+                // The command menu's keys, only while it's open.
+                Keys.onUpPressed: event => {
+                    if (!composer.menuOpen) { event.accepted = false; return }
+                    composer.suggestionIndex = (composer.suggestionIndex + composer.suggestions.length - 1) % composer.suggestions.length
+                }
+                Keys.onDownPressed: event => {
+                    if (!composer.menuOpen) { event.accepted = false; return }
+                    composer.suggestionIndex = (composer.suggestionIndex + 1) % composer.suggestions.length
+                }
+                Keys.onTabPressed: event => {
+                    if (!composer.menuOpen) { event.accepted = false; return }
+                    composer.acceptSuggestion(composer.suggestionIndex)
+                }
+                Keys.onEscapePressed: event => {
+                    if (!composer.menuOpen) { event.accepted = false; return }
+                    composer.menuDismissed = true
+                }
                 Keys.onReturnPressed: event => {
-                    if (event.modifiers & Qt.ShiftModifier)
+                    if (event.modifiers & Qt.ShiftModifier) {
                         event.accepted = false
+                        return
+                    }
+                    // Enter completes a partly typed command, then runs it.
+                    const s = composer.menuOpen ? composer.suggestions[composer.suggestionIndex] : null
+                    if (s && s.insert.trim() !== input.text.trim())
+                        composer.acceptSuggestion(composer.suggestionIndex)
                     else
                         composer.send()
                 }
@@ -346,6 +403,70 @@ Rectangle {
         }
     }
 
+    // The command menu, above the message box.
+    Rectangle {
+        id: commandMenu
+        visible: composer.menuOpen
+        x: 0
+        y: -height - 8
+        z: 10
+        width: composer.width
+        height: Math.min(menuList.contentHeight, 320) + 8
+        radius: Math.max(Theme.radius, 0)
+        color: Theme.raised
+        border.width: 1
+        border.color: Theme.border
+
+        ListView {
+            id: menuList
+            anchors.fill: parent
+            anchors.margins: 4
+            clip: true
+            model: composer.suggestions
+            currentIndex: composer.suggestionIndex
+            onCurrentIndexChanged: positionViewAtIndex(currentIndex, ListView.Contain)
+            boundsBehavior: Flickable.StopAtBounds
+            ScrollBar.vertical: ScrollBar { policy: menuList.contentHeight > menuList.height ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff }
+            delegate: Rectangle {
+                id: menuRow
+                required property var modelData
+                required property int index
+                width: ListView.view.width
+                height: 34
+                radius: Theme.radius
+                color: index === composer.suggestionIndex ? Qt.alpha(Theme.accent, 0.18)
+                       : (rowHover.hovered ? Theme.surface : "transparent")
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 10
+                    anchors.rightMargin: 10
+                    spacing: 10
+                    Label {
+                        text: menuRow.modelData.display
+                        color: Theme.foreground
+                        font.family: "monospace"
+                        font.pixelSize: 13
+                    }
+                    Label {
+                        visible: menuRow.modelData.skill
+                        text: "skill"
+                        color: Theme.accent
+                        font.pixelSize: 11
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: menuRow.modelData.meta
+                        color: Theme.muted
+                        font.pixelSize: 12
+                        elide: Text.ElideRight
+                    }
+                }
+                HoverHandler { id: rowHover; cursorShape: Qt.PointingHandCursor }
+                TapHandler { onTapped: composer.acceptSuggestion(menuRow.index) }
+            }
+        }
+    }
+
     ModelPicker {
         id: modelPicker
         providers: composer.providers
@@ -377,6 +498,16 @@ Rectangle {
     }
     Connections {
         target: HermesApp
+        function onPrefill(text) {
+            composer.editing = false
+            input.text = text
+            input.forceActiveFocus()
+            input.cursorPosition = input.length
+        }
+        function onOpenModelPicker() {
+            HermesApp.refreshModels()
+            modelPicker.open()
+        }
         function onModelConfirm(message, model, provider) {
             confirmDialog.message = message
             confirmDialog.model = model
