@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use super::auth;
 use super::session::Session;
 
-fn cache_dir() -> PathBuf {
+pub fn cache_dir() -> PathBuf {
     let base = std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())

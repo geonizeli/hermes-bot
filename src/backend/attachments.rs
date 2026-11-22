@@ -250,6 +250,27 @@ pub async fn pick_files() -> Result<Vec<PathBuf>, String> {
     }
 }
 
+/// One picture through the xdg file chooser; `None` when cancelled.
+pub async fn pick_image() -> Result<Option<PathBuf>, String> {
+    use ashpd::desktop::file_chooser::{FileFilter, SelectedFiles};
+    let images = ["image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp"]
+        .into_iter()
+        .fold(FileFilter::new("Images"), |f, mime| f.mimetype(mime));
+    let request = SelectedFiles::open_file()
+        .title("Choose a picture")
+        .modal(true)
+        .multiple(false)
+        .filter(images)
+        .send()
+        .await
+        .map_err(|e| format!("Couldn't open the file chooser: {e}"))?;
+    match request.response() {
+        Ok(files) => Ok(files.uris().iter().find_map(|u| path_from_url(u.as_str()))),
+        Err(ashpd::Error::Response(_)) => Ok(None),
+        Err(e) => Err(format!("The file chooser failed: {e}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

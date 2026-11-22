@@ -124,6 +124,39 @@ pub mod qobject {
         #[qinvokable]
         fn answer_request(self: Pin<&mut HermesApp>, id: QString, result: QString);
 
+        // ── Edit Bot (see bridge/app/editor.rs) ──
+        /// JSON {name, look, shapes, kinds, swatches} to open the editor with.
+        #[qinvokable]
+        fn edit_bot_open(self: Pin<&mut HermesApp>, name: QString) -> QString;
+        /// file:// URL of a face PNG.
+        #[qinvokable]
+        fn face_url(self: Pin<&mut HermesApp>, shape: QString, color: QString, name: QString, px: i32) -> QString;
+        /// The color a face is drawn in: the pick, else the name's hue.
+        #[qinvokable]
+        fn face_color(self: &HermesApp, color: QString, name: QString) -> QString;
+        /// JSON {blob, seed, kind} for a shape string.
+        #[qinvokable]
+        fn blob_parts(self: &HermesApp, shape: QString) -> QString;
+        #[qinvokable]
+        fn blob_shape(self: &HermesApp, seed: QString, kind: QString) -> QString;
+        #[qinvokable]
+        fn random_seed(self: &HermesApp) -> QString;
+        #[qinvokable]
+        fn default_shape(self: &HermesApp, name: QString) -> QString;
+        #[qinvokable]
+        fn edit_pick_image(self: Pin<&mut HermesApp>);
+        #[qinvokable]
+        fn edit_probe_generate(self: Pin<&mut HermesApp>);
+        #[qinvokable]
+        fn edit_generate(self: Pin<&mut HermesApp>, describe: QString, name: QString, title: QString, description: QString);
+        #[qinvokable]
+        fn edit_load_pets(self: Pin<&mut HermesApp>);
+        #[qinvokable]
+        fn edit_pet_thumb(self: Pin<&mut HermesApp>, slug: QString, url: QString);
+        /// `opened` and `current` are the editor's looks as JSON.
+        #[qinvokable]
+        fn edit_save(self: Pin<&mut HermesApp>, name: QString, opened: QString, current: QString);
+
         /// JSON `ServerInfo`, or an empty string with `error` set.
         #[qsignal]
         fn server_probed(self: Pin<&mut HermesApp>, info: QString);
@@ -169,6 +202,19 @@ pub mod qobject {
         /// The agent asks something (approval, clarification). `id` is JSON.
         #[qsignal]
         fn server_request(self: Pin<&mut HermesApp>, id: QString, method: QString, params: QString);
+        /// A picture for the editor (upload or generation), or an error.
+        #[qsignal]
+        fn edit_image_ready(self: Pin<&mut HermesApp>, url: QString, error: QString);
+        #[qsignal]
+        fn edit_generate_available(self: Pin<&mut HermesApp>, available: bool);
+        /// JSON array of {slug, name, url}, or an error.
+        #[qsignal]
+        fn edit_pets_loaded(self: Pin<&mut HermesApp>, pets: QString, error: QString);
+        /// A pet's thumbnail; `url` is empty when it failed.
+        #[qsignal]
+        fn edit_pet_ready(self: Pin<&mut HermesApp>, slug: QString, url: QString);
+        #[qsignal]
+        fn edit_saved(self: Pin<&mut HermesApp>, ok: bool, message: QString);
     }
 
     impl cxx_qt::Threading for HermesApp {}
@@ -228,6 +274,10 @@ pub struct AppRust {
     /// Each bot's Bot Chat as the roster reports it (`canonical_session`),
     /// the fallback when a lookup answers empty.
     roster_chats: HashMap<String, String>,
+    /// Each bot's `profiles.list` row, for the editor.
+    roster_rows: HashMap<String, Value>,
+    /// Rendered editor faces by (shape, color, name, px).
+    face_cache: HashMap<(String, String, String, u32), String>,
     /// Turns in flight, live session id → bot, including ones whose chat
     /// isn't open; switching bots leaves them running.
     running: HashMap<String, String>,
@@ -239,6 +289,8 @@ pub struct AppRust {
     /// streamed delta, finished ones shouldn't.
     markdown_cache: HashMap<u64, String>,
 }
+
+mod editor;
 
 fn file_url(path: &std::path::Path) -> String {
     url::Url::from_file_path(path).map(|u| u.to_string()).unwrap_or_default()
@@ -458,56 +510,82 @@ impl qobject::HermesApp {
 
     fn load_bots(self: Pin<&mut Self>) {
         self.call("profiles.list", json!({ "include_sessions": true }), |mut app, result| {
-            let profiles = result.get("profiles").and_then(Value::as_array).cloned().unwrap_or_default();
-            let bots: Vec<Value> = profiles
-                .iter()
-                .map(|p| {
-                    let name = p.get("name").and_then(Value::as_str).unwrap_or("default");
-                    json!({
-                        "name": name,
-                        "displayName": roster::display_name(p),
-                        "description": p.get("description").and_then(Value::as_str).unwrap_or_default(),
-                        "meta": roster::meta(p),
-                        "model": p.get("model").and_then(Value::as_str).unwrap_or_default(),
-                        "isDefault": p.get("is_default").and_then(Value::as_bool).unwrap_or(false),
-                        "preview": p.pointer("/canonical_session/preview").and_then(Value::as_str).unwrap_or_default(),
-                        "avatar": "",
-                    })
-                })
-                .collect();
+            let bots = app.as_mut().apply_roster(&result);
             let server_id = app.rust().config.active_server.clone().unwrap_or_default();
-            let with_avatar: Vec<String> = profiles
-                .iter()
-                .filter(|p| p.get("has_avatar").and_then(Value::as_bool).unwrap_or(false))
-                .filter_map(|p| p.get("name").and_then(Value::as_str).map(str::to_string))
-                .collect();
-            let mut bots = bots;
-            for bot in bots.iter_mut() {
-                let name = bot["name"].as_str().unwrap_or_default().to_string();
-                if !with_avatar.contains(&name) {
-                    media::clear_avatar(&server_id, &name);
-                } else if let Some(file) = media::cached_avatar(&server_id, &name) {
-                    bot["avatar"] = json!(file_url(&file));
-                }
-            }
             let remembered = app.rust().config.last_bot.get(&server_id).cloned();
             let pick = remembered
                 .filter(|name| bots.iter().any(|b| b["name"] == *name))
                 .or_else(|| bots.iter().find(|b| b["isDefault"] == true).and_then(|b| b["name"].as_str().map(str::to_string)))
                 .or_else(|| bots.first().and_then(|b| b["name"].as_str().map(str::to_string)))
                 .unwrap_or_else(|| "default".into());
-            app.as_mut().rust_mut().roster_chats = profiles
-                .iter()
-                .filter_map(|p| Some((p.get("name")?.as_str()?.to_string(), botchat::canonical_from_roster(p)?)))
-                .collect();
             if bots.is_empty() {
                 app.as_mut().set_chat_loading(false);
             }
-            app.as_mut().set_bots(q(Value::Array(bots).to_string()));
             app.as_mut().set_active_bot(q(&pick));
             app.as_mut().open_bot_chat();
-            app.as_mut().load_avatars(server_id, with_avatar);
         });
+    }
+
+    /// Re-reads the roster (names, looks, avatars) without touching the open chat.
+    fn refresh_bots(self: Pin<&mut Self>) {
+        self.call("profiles.list", json!({ "include_sessions": true }), |app, result| {
+            app.apply_roster(&result);
+        });
+    }
+
+    /// Publishes a `profiles.list` reply as the sidebar's bots, then fetches
+    /// their avatars. Returns the bots.
+    fn apply_roster(mut self: Pin<&mut Self>, result: &Value) -> Vec<Value> {
+        let profiles = result.get("profiles").and_then(Value::as_array).cloned().unwrap_or_default();
+        let server_id = self.rust().config.active_server.clone().unwrap_or_default();
+        let previews: HashMap<String, Value> = serde_json::from_str::<Vec<Value>>(&self.bots().to_string())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|b| Some((b["name"].as_str()?.to_string(), b["preview"].clone())))
+            .collect();
+        let mut with_avatar = Vec::new();
+        let bots: Vec<Value> = profiles
+            .iter()
+            .map(|p| {
+                let name = p.get("name").and_then(Value::as_str).unwrap_or("default");
+                let mut avatar = String::new();
+                if p.get("has_avatar").and_then(Value::as_bool).unwrap_or(false) {
+                    with_avatar.push(name.to_string());
+                    if let Some(file) = media::cached_avatar(&server_id, name) {
+                        avatar = file_url(&file);
+                    }
+                } else {
+                    media::clear_avatar(&server_id, name);
+                }
+                let preview = p
+                    .pointer("/canonical_session/preview")
+                    .and_then(Value::as_str)
+                    .map(|s| json!(s))
+                    .or_else(|| previews.get(name).cloned())
+                    .unwrap_or(json!(""));
+                json!({
+                    "name": name,
+                    "displayName": roster::display_name(p),
+                    "description": p.get("description").and_then(Value::as_str).unwrap_or_default(),
+                    "meta": roster::meta(p),
+                    "model": p.get("model").and_then(Value::as_str).unwrap_or_default(),
+                    "isDefault": p.get("is_default").and_then(Value::as_bool).unwrap_or(false),
+                    "preview": preview,
+                    "avatar": avatar,
+                })
+            })
+            .collect();
+        self.as_mut().rust_mut().roster_chats = profiles
+            .iter()
+            .filter_map(|p| Some((p.get("name")?.as_str()?.to_string(), botchat::canonical_from_roster(p)?)))
+            .collect();
+        self.as_mut().rust_mut().roster_rows = profiles
+            .iter()
+            .filter_map(|p| Some((p.get("name")?.as_str()?.to_string(), p.clone())))
+            .collect();
+        self.as_mut().set_bots(q(Value::Array(bots.clone()).to_string()));
+        self.as_mut().load_avatars(server_id, with_avatar);
+        bots
     }
 
     /// Fetches each bot's avatar from the server and swaps it into the roster.

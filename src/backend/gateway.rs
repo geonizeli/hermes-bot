@@ -145,6 +145,11 @@ impl Gateway {
     }
 
     pub async fn request(&self, method: &str, params: Value) -> Result<Value, String> {
+        self.request_within(method, params, Duration::from_secs(60)).await
+    }
+
+    /// `request` with its own deadline, for calls the server takes long on.
+    pub async fn request_within(&self, method: &str, params: Value, deadline: Duration) -> Result<Value, String> {
         let id = format!("hb{}", self.next_id.fetch_add(1, Ordering::Relaxed));
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(id.clone(), tx);
@@ -153,7 +158,7 @@ impl Gateway {
             self.pending.lock().await.remove(&id);
             return Err("Not connected.".into());
         }
-        match tokio::time::timeout(Duration::from_secs(60), rx).await {
+        match tokio::time::timeout(deadline, rx).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err("Not connected.".into()),
             Err(_) => {
