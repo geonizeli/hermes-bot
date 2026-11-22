@@ -363,6 +363,7 @@ mod ready_live {
 
 /// Calls one read-only RPC on the real server and prints a summary:
 /// `HERMES_BOT_RPC=model.options HERMES_BOT_PARAMS='{"profile":"default"}' cargo test rpc_live -- --ignored --nocapture`.
+/// `"$LIVE"` in the params is replaced by the profile's resumed Bot Chat.
 #[cfg(test)]
 mod rpc_live {
     use super::*;
@@ -382,11 +383,21 @@ mod rpc_live {
         }
         let (tx, _rx) = mpsc::unbounded_channel();
         let gateway = Gateway::connect(&server.url, &tokens.access_token, tx).await.unwrap();
+        // "$LIVE" in the params stands for the profile's Bot Chat, resumed first.
+        let mut params = params;
+        if params.to_string().contains("$LIVE") {
+            let profile = params["profile"].as_str().unwrap_or("default").to_string();
+            let stored = crate::backend::botchat::lookup(&gateway, &profile, None).await.unwrap().expect("bot chat");
+            let live = crate::backend::botchat::resume(&gateway, &profile, &stored).await.unwrap().live;
+            params = serde_json::from_str(&params.to_string().replace("$LIVE", &live)).unwrap();
+        }
         let result = gateway.request(&method, params).await;
         let text = match result {
             Ok(v) => serde_json::to_string(&v).unwrap(),
             Err(e) => format!("ERROR {e}"),
         };
-        println!("RESULT {}", &text[..text.len().min(3000)]);
+        // HERMES_BOT_FULL=1 prints the whole result instead of the first 3000 bytes.
+        let limit = if std::env::var("HERMES_BOT_FULL").is_ok() { text.len() } else { text.len().min(3000) };
+        println!("RESULT {}", &text[..limit]);
     }
 }

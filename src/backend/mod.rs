@@ -11,6 +11,7 @@ pub mod media;
 pub mod rfb;
 pub mod roster;
 pub mod session;
+pub mod slash;
 pub mod store;
 pub mod theme;
 

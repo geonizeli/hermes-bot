@@ -111,6 +111,8 @@ pub fn to_view(rows: &[Value]) -> Vec<Value> {
             });
         match text("role").as_str() {
             "user" => {
+                // A skill turn shows as its invocation, not the skill's body.
+                let content = super::slash::skill_invocation_text(&content).unwrap_or(content);
                 let (body, refs) = attachments::split_refs(&content);
                 if body.trim().is_empty() && refs.is_empty() {
                     continue;
