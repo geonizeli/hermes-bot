@@ -5,7 +5,8 @@ import HermesBot
 
 // The Pet tab: browse the petdex gallery and use a pet's first frame as the
 // bot's picture. The gallery has thousands of pets, so tiles are shown a page
-// at a time; thumbnails are cropped by the server and fetched per page.
+// at a time; thumbnails are cropped by the server, fetched for the current
+// page and preloaded for the next two.
 ColumnLayout {
     id: picker
     spacing: 8
@@ -36,6 +37,21 @@ ColumnLayout {
 
     function goTo(p) {
         page = Math.max(0, Math.min(p, pageCount - 1))
+    }
+
+    // Fetch the thumbnails of the next pages ahead of time, so turning the
+    // page shows pictures straight away.
+    readonly property int preloadPages: 2
+    function preload() {
+        const start = (page + 1) * pageSize
+        ranked.slice(start, start + preloadPages * pageSize).forEach(p => thumb(p))
+    }
+    onVisiblePetsChanged: preloadTimer.restart()
+    Timer {
+        // Debounced so typing a search doesn't fire requests on every key.
+        id: preloadTimer
+        interval: 300
+        onTriggered: picker.preload()
     }
 
     function reset() {
