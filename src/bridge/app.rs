@@ -189,7 +189,7 @@ use crate::backend::botchat::{self, Opened};
 use crate::backend::cron;
 use crate::backend::{attachments, history, markdown, media};
 use crate::backend::gateway::{Gateway, Incoming, UNAUTHORIZED};
-use crate::backend::{runtime, session};
+use crate::backend::{roster, runtime, session};
 use crate::backend::store::{self, Config, Server, Tokens};
 
 #[derive(Default)]
@@ -465,8 +465,9 @@ impl qobject::HermesApp {
                     let name = p.get("name").and_then(Value::as_str).unwrap_or("default");
                     json!({
                         "name": name,
-                        "displayName": p.get("display_name").and_then(Value::as_str).filter(|s| !s.is_empty()).unwrap_or(name),
+                        "displayName": roster::display_name(p),
                         "description": p.get("description").and_then(Value::as_str).unwrap_or_default(),
+                        "meta": roster::meta(p),
                         "model": p.get("model").and_then(Value::as_str).unwrap_or_default(),
                         "isDefault": p.get("is_default").and_then(Value::as_bool).unwrap_or(false),
                         "preview": p.pointer("/canonical_session/preview").and_then(Value::as_str).unwrap_or_default(),
