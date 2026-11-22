@@ -1524,7 +1524,7 @@ impl qobject::HermesApp {
         self.as_mut().set_usage(q(view.to_string()));
     }
 
-    pub fn steer(mut self: Pin<&mut Self>, text: QString) {
+    pub fn steer(self: Pin<&mut Self>, text: QString) {
         let text = text.to_string();
         let live = self.rust().live_session.clone();
         if text.trim().is_empty() || live.is_empty() {

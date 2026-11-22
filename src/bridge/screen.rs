@@ -278,7 +278,7 @@ impl qobject::ScreenView {
 
             let qt_events = qt.clone();
             let end = rfb::run(url.as_str(), frame, rx, move |event| match event {
-                rfb::Event::Ready { width, height, .. } => {
+                rfb::Event::Ready { width, height } => {
                     let _ = qt_events.queue(move |mut view| {
                         if view.rust().generation == generation {
                             view.as_mut().rust_mut().retries = 0;

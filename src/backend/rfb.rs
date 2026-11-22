@@ -69,7 +69,7 @@ pub enum Input {
 
 #[derive(Debug, Clone)]
 pub enum Event {
-    Ready { width: u32, height: u32, name: String },
+    Ready { width: u32, height: u32 },
     /// Pixels changed; repaint.
     Updated,
 }
@@ -284,15 +284,15 @@ pub async fn run(
         let width = reader.u16().await? as u32;
         let height = reader.u16().await? as u32;
         reader.bytes(16).await?; // the server's pixel format; we set our own
-        let name = reader.string().await?;
-        Ok::<_, Ended>((width, height, name))
+        reader.string().await?; // the desktop's name; we don't show it
+        Ok::<_, Ended>((width, height))
     };
-    let (width, height, name) = match init.await {
+    let (width, height) = match init.await {
         Ok(v) => v,
         Err(e) => return e,
     };
     frame.lock().unwrap().resize(width, height);
-    on_event(Event::Ready { width, height, name });
+    on_event(Event::Ready { width, height });
 
     // ---- writer: our requests and the user's input ----
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Vec<u8>>();
@@ -361,7 +361,7 @@ pub async fn run(
                     let (fw, fh) = match resized {
                         Some((w, h)) => {
                             frame.lock().unwrap().resize(w, h);
-                            on_event(Event::Ready { width: w, height: h, name: String::new() });
+                            on_event(Event::Ready { width: w, height: h });
                             let _ = out_tx.send(update_request(false, w, h));
                             continue;
                         }
