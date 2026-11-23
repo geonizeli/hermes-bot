@@ -639,3 +639,154 @@ fn links_in_answers_still_open_on_click(cx: &mut TestAppContext) {
     h.ui(cx, |w, cx| w.click_at(super::widgets::id("answer", answer), point(px(10.), px(10.)), cx));
     assert_eq!(cx.opened_url().as_deref(), Some("https://example.com/docs"));
 }
+
+// ── bot groups ──
+
+/// A server that runs groups, with one group of two bots.
+fn with_a_group(h: &Harness, cx: &mut TestAppContext) {
+    use crate::backend::groups::{Capabilities, Member, Room};
+    h.state.update(cx, |s, cx| {
+        s.bots.push(Bot { name: "work".into(), display_name: "Work".into(), ..Default::default() });
+        s.groups.caps = Some(Capabilities::from_reply(&json!({
+            "driver": true,
+            "methods": ["groups.list", "groups.state", "groups.log", "groups.create", "groups.send", "groups.stop", "groups.rename", "groups.disband"],
+            "seatable_profiles": ["default", "work"],
+        })));
+        let member = |p: &str| Member { member_id: p.into(), profile: p.into(), handle: p.into(), display_name: String::new() };
+        s.groups.rooms = vec![Room { room_id: "r1".into(), name: "Pair".into(), members: vec![member("default"), member("work")], ..Default::default() }];
+        cx.notify();
+    });
+}
+
+#[gpui_kit::test]
+fn groups_open_from_the_sidebar_in_place_of_the_chat(cx: &mut TestAppContext) {
+    let h = open(cx);
+    with_a_group(&h, cx);
+    h.ui(cx, |w, cx| {
+        assert!(w.try_find("new-group").is_some(), "the + offers a new group");
+        w.click("group-r1", cx);
+    });
+    assert_eq!(h.state.read_with(cx, |s, _| s.active_group.clone()), Some("r1".into()));
+    h.ui(cx, |w, _| {
+        assert!(w.try_find("group-view").is_some());
+        assert!(w.try_find("chat-view").is_none(), "the group takes the chat's place");
+        assert!(w.try_find("member-chip-work").is_some());
+    });
+
+    // A poll's replies: the log becomes lines, live work shows on the chips.
+    let log: serde_json::Value = serde_json::from_str(&include_str!("../../tests/fixtures/groups_log.json").replace("communication", "default").replace("finance", "work")).unwrap();
+    let state = json!({"room": {"room_id": "r1", "name": "Pair", "members": [
+        {"member_id": "default", "profile": "default", "handle": "default"},
+        {"member_id": "work", "profile": "work", "handle": "work"}
+    ]}, "driver_status": {"working": true, "member_activity": [{"member_id": "work", "status": "running", "tool": "terminal", "started_at": 1.0}]}});
+    h.state.update(cx, |s, cx| s.apply_group_replies(state, log, cx));
+    h.ui(cx, |w, _| {
+        assert!(w.try_find(super::widgets::id("group-sent", 1)).is_some(), "your message");
+        assert!(w.try_find(super::widgets::id("group-answer", 2)).is_some(), "a bot's answer");
+        assert!(w.try_find(super::widgets::id("group-answer", 4)).is_some());
+        assert!(w.try_find("group-stop").is_some(), "Stop while the group works");
+    });
+    h.state.read_with(cx, |s, _| {
+        assert_eq!(s.group.entries.len(), 3);
+        assert_eq!(s.groups.previews.get("r1").map(String::as_str), Some("Work: Hello from @work. What should we look at first?"));
+    });
+
+    // Picking a bot goes back to its chat.
+    h.ui(cx, |w, cx| w.click("bot-default", cx));
+    h.ui(cx, |w, _| assert!(w.try_find("chat-view").is_some() && w.try_find("group-view").is_none()));
+    assert_eq!(h.state.read_with(cx, |s, _| s.active_group.clone()), None);
+}
+
+#[gpui_kit::test]
+fn a_new_group_needs_two_bots(cx: &mut TestAppContext) {
+    let h = open(cx);
+    with_a_group(&h, cx);
+    h.ui(cx, |w, cx| w.click("new-group", cx));
+    h.ui(cx, |w, cx| {
+        assert!(w.try_find("group-dialog").is_some());
+        w.click("pick-bot-default", cx);
+        // One bot isn't a group: Create does nothing yet.
+        w.click("group-dialog-confirm", cx);
+    });
+    h.ui(cx, |w, cx| {
+        assert!(w.try_find("group-dialog").is_some());
+        w.click("pick-bot-work", cx);
+        w.click("group-dialog-confirm", cx);
+    });
+    // There's no server here, so the create fails and the dialog says so.
+    h.ui(cx, |w, _| assert!(w.try_find("group-dialog").is_some(), "the dialog stays open with the error"));
+    h.root.read_with(cx, |r, cx| {
+        assert!(matches!(r.group_dialog.read(cx).mode, Some(super::group_dialogs::Mode::New { ref picked }) if picked.len() == 2));
+    });
+    h.ui(cx, |w, cx| w.click("group-dialog-cancel", cx));
+    h.ui(cx, |w, _| assert!(w.try_find("group-dialog").is_none()));
+}
+
+#[gpui_kit::test]
+fn an_unconfirmed_group_message_offers_retry(cx: &mut TestAppContext) {
+    let h = open(cx);
+    with_a_group(&h, cx);
+    h.ui(cx, |w, cx| w.click("group-r1", cx));
+    let input = h.root.read_with(cx, |r, cx| r.group.read(cx).input.clone());
+    h.ui(cx, |w, cx| input.update(cx, |i, cx| i.focus(w, cx)));
+    h.ui(cx, |w, cx| w.input("hello both", cx));
+    h.ui(cx, |w, cx| w.press("enter", cx));
+    // No server answered, so nothing proves the message wasn't posted: it
+    // stays, with its event id, for Retry.
+    let first = h.state.read_with(cx, |s, _| s.group_send().cloned()).expect("an open send");
+    assert_eq!(first.text, "hello both");
+    assert!(!first.failed.is_empty());
+    h.ui(cx, |w, cx| {
+        assert!(w.try_find("group-outgoing").is_some());
+        w.click("group-retry", cx);
+    });
+    let again = h.state.read_with(cx, |s, _| s.group_send().cloned()).unwrap();
+    assert_eq!(again.event_id, first.event_id, "Retry resends the same event");
+}
+
+#[gpui_kit::test]
+fn the_group_menu_renames_and_disbands(cx: &mut TestAppContext) {
+    let h = open(cx);
+    with_a_group(&h, cx);
+    h.ui(cx, |w, cx| w.click("group-r1", cx));
+    h.ui(cx, |w, cx| w.click("group-menu", cx));
+    h.ui(cx, |w, cx| w.click("menu-item-0", cx));
+    h.root.read_with(cx, |r, cx| assert_eq!(r.group_dialog.read(cx).mode, Some(super::group_dialogs::Mode::Rename { room_id: "r1".into() })));
+    h.ui(cx, |w, cx| w.click("group-dialog-cancel", cx));
+    h.ui(cx, |w, cx| w.click("group-menu", cx));
+    h.ui(cx, |w, cx| w.click("menu-item-1", cx));
+    h.root.read_with(cx, |r, cx| assert_eq!(r.group_dialog.read(cx).mode, Some(super::group_dialogs::Mode::Disband { room_id: "r1".into() })));
+    h.ui(cx, |w, cx| w.click("group-dialog-cancel", cx));
+
+    // Any group disbands from its row in the sidebar, open or not.
+    h.ui(cx, |w, cx| w.click("bot-default", cx));
+    h.ui(cx, |w, cx| w.right_click("group-r1", cx));
+    h.ui(cx, |w, cx| w.click("menu-item-1", cx));
+    h.root.read_with(cx, |r, cx| assert_eq!(r.group_dialog.read(cx).mode, Some(super::group_dialogs::Mode::Disband { room_id: "r1".into() })));
+    h.ui(cx, |w, _| assert!(w.try_find("group-dialog-confirm").is_some()));
+}
+
+/// Opens the server's first group and reads it (never posts). Run with
+/// `HERMES_BOT_UI_LIVE=1 cargo test ui::tests::live_group -- --ignored --nocapture`.
+#[gpui_kit::test]
+#[ignore]
+fn live_group_reads_the_log(cx: &mut TestAppContext) {
+    if std::env::var("HERMES_BOT_UI_LIVE").is_err() {
+        return;
+    }
+    let mut config = crate::backend::store::load(&crate::backend::store::config_path()).unwrap();
+    let server = config.active_server.clone().expect("a saved server");
+    config.last_bot.insert(server, "default".into());
+    let h = open_with(cx, config, true);
+    assert!(wait_for(&h, cx, 60, |s| s.connected && !s.groups.rooms.is_empty()), "groups listed: {}", h.state.read_with(cx, |s, _| s.groups.unavailable.clone()));
+    let room = h.state.read_with(cx, |s, _| s.groups.rooms[0].clone());
+    h.state.update(cx, |s, cx| s.select_group(&room.room_id, cx));
+    assert!(wait_for(&h, cx, 60, |s| !s.group.loading), "the log loads");
+    h.state.read_with(cx, |s, _| {
+        println!("{}: {} lines, driver {:?}, read error {:?}", room.name, s.group.entries.len(), s.group.driver, s.group.read_error);
+        assert!(s.group.read_error.is_empty());
+        assert!(!s.group.entries.is_empty());
+    });
+    h.ui(cx, |w, _| assert!(w.try_find("group-view").is_some()));
+    h.state.update(cx, |s, _| s.disconnect());
+}

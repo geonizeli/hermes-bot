@@ -32,9 +32,11 @@ pub mod queued;
 pub mod commands;
 pub mod editor;
 mod edit;
+pub mod groups;
 
 pub use chat::{FileRef, Role, Row, Todo};
 pub use queued::{MessageQueue, QueuedMessage};
+pub use groups::{GroupChat, Groups};
 
 /// A bot (Hermes profile) as the sidebar shows it.
 #[derive(Clone, Debug, Default)]
@@ -99,6 +101,12 @@ pub enum AppEvent {
     /// A pet's thumbnail; `None` when it failed.
     EditPetReady(String, Option<PathBuf>),
     EditSaved(Result<(), String>),
+    /// A group opened in place of the bot chat.
+    GroupOpened,
+    /// The group proved it didn't take a message: its words go back to the box.
+    GroupDraftBack(String),
+    /// Creating, renaming or disbanding a group finished.
+    GroupActionDone(Result<(), String>),
 }
 
 pub struct AppState {
@@ -167,6 +175,11 @@ pub struct AppState {
     pub media: HashMap<String, MediaState>,
     /// Each bot's slash commands, from `commands.catalog`.
     pub(crate) catalogs: HashMap<String, slash::Catalog>,
+    /// The server's bot groups.
+    pub groups: Groups,
+    /// The open group (shown instead of the bot chat), by room id.
+    pub active_group: Option<String>,
+    pub group: GroupChat,
     queue: Queue<AppState>,
 }
 
@@ -328,6 +341,9 @@ impl AppState {
             queues: HashMap::new(),
             media: HashMap::new(),
             catalogs: HashMap::new(),
+            groups: Groups::default(),
+            active_group: None,
+            group: GroupChat::default(),
             queue: Queue::new(cx),
         }
     }
@@ -426,6 +442,13 @@ impl AppState {
         self.screen_log.clear();
         self.active_session.clear();
         self.load_transcript(Vec::new());
+        // Unconfirmed sends outlive a reconnect; the open group reads again.
+        let sends = std::mem::take(&mut self.groups.sends);
+        self.groups = Groups { sends, ..Groups::default() };
+        if let Some(room_id) = self.active_group.clone() {
+            let room = self.group.room.clone();
+            self.group.reset(&room_id, room);
+        }
     }
 
     /// Connects to the active server with its stored tokens, refreshing them
@@ -463,6 +486,7 @@ impl AppState {
                         };
                         app.status = format!("Connected to {}", server.name);
                         app.load_bots(cx);
+                        app.load_groups(cx);
                     }
                     Err(e) => {
                         app.chat_loading = false;
@@ -901,6 +925,8 @@ impl AppState {
         }
         self.config.active_server = Some(id.to_string());
         self.save_config();
+        self.leave_group();
+        self.groups.sends.clear();
         self.connect_active(cx);
     }
 
@@ -911,6 +937,13 @@ impl AppState {
     // ── bots and chats ──
 
     pub fn select_bot(&mut self, name: &str, cx: &mut Context<Self>) {
+        if self.active_group.is_some() {
+            self.leave_group();
+            if self.active_bot == name {
+                self.open_bot_chat(cx);
+                return;
+            }
+        }
         if let Some(server_id) = self.config.active_server.clone() {
             self.config.last_bot.insert(server_id, name.to_string());
             self.save_config();
