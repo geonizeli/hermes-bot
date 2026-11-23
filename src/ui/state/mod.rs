@@ -28,10 +28,12 @@ use crate::backend::{roster, runtime, session};
 use super::queue::Queue;
 
 mod chat;
+pub mod queued;
 pub mod commands;
 pub mod editor;
 
 pub use chat::{FileRef, Role, Row, Todo};
+pub use queued::{MessageQueue, QueuedMessage};
 
 /// A bot (Hermes profile) as the sidebar shows it.
 #[derive(Clone, Debug, Default)]
@@ -156,6 +158,8 @@ pub struct AppState {
     /// isn't open; switching bots leaves them running.
     running: HashMap<String, String>,
     next_attachment: u64,
+    /// Messages waiting for each bot's answer to end, by `queue_key`.
+    queues: HashMap<String, MessageQueue>,
     /// Server path → fetched file.
     pub media: HashMap<String, MediaState>,
     /// Each bot's slash commands, from `commands.catalog`.
@@ -317,6 +321,7 @@ impl AppState {
             roster_rows: HashMap::new(),
             running: HashMap::new(),
             next_attachment: 0,
+            queues: HashMap::new(),
             media: HashMap::new(),
             catalogs: HashMap::new(),
             queue: Queue::new(cx),
@@ -641,6 +646,8 @@ impl AppState {
                             if kind == "message.complete" && !final_text.trim().is_empty() {
                                 self.set_bot_preview(&profile, &final_text);
                             }
+                            let completed = kind == "message.complete" && matches!(text("status").as_str(), "" | "complete");
+                            self.after_turn(&profile, &session_id, completed, cx);
                         }
                     }
                     _ if !ours => {}
@@ -726,12 +733,16 @@ impl AppState {
                             self.set_bot_preview(&active, &final_text);
                         }
                         self.on_turn_finished(&status, &final_text, &error);
+                        let active = self.active_bot.clone();
+                        self.after_turn(&active, &live, status == "complete", cx);
                     }
                     "error" => {
                         let live = self.live_session.clone();
                         self.mark_finished(&live);
                         self.streaming = false;
                         self.error = text("message");
+                        let active = self.active_bot.clone();
+                        self.after_turn(&active, &live, false, cx);
                     }
                     _ => {}
                 }
@@ -740,6 +751,8 @@ impl AppState {
                 cx.emit(AppEvent::ServerRequest { id, method, params });
             }
             Incoming::Closed(reason) => {
+                // Whatever was answering is lost; queued messages wait to be resumed.
+                self.queues.values_mut().for_each(MessageQueue::park);
                 self.gateway = None;
                 self.running.clear();
                 session::set(None);
@@ -1027,15 +1040,26 @@ impl AppState {
     /// Sends `text` as a prompt with the waiting attachments; the bubble
     /// shows `echo` (a skill's invocation rather than its expanded body).
     fn submit(&mut self, text: String, echo: String, cx: &mut Context<Self>) {
-        if (text.trim().is_empty() && self.pending.is_empty()) || self.streaming {
+        if self.streaming {
+            return;
+        }
+        let pending = std::mem::take(&mut self.pending);
+        self.submit_with(text, echo, pending, false, cx);
+    }
+
+    /// `submit` with its own attachments. `queued` marks a message from the
+    /// queue: should the last turn still be ending, the server holds it
+    /// rather than taking it as a correction.
+    fn submit_with(&mut self, text: String, echo: String, pending: Vec<attachments::Attachment>, queued: bool, cx: &mut Context<Self>) {
+        if text.trim().is_empty() && pending.is_empty() {
             return;
         }
         let Some(gateway) = self.gateway.clone() else {
+            self.pending.extend(pending);
             self.set_error("Not connected.", cx);
             return;
         };
         self.error.clear();
-        let pending = std::mem::take(&mut self.pending);
         let echo_files: Vec<FileRef> = pending.iter().map(|a| FileRef::from_view(&a.to_view())).collect();
         self.on_user_message(&echo, echo_files.clone());
         self.streaming = true;
@@ -1089,9 +1113,11 @@ impl AppState {
                 }
                 let has_images = pending.iter().any(|a| a.kind == attachments::Kind::Image);
                 let prompt = attachments::compose_prompt(&text, &refs, has_images);
-                let submitted = gateway
-                    .request("prompt.submit", json!({ "session_id": live, "text": prompt, "profile": profile }))
-                    .await?;
+                let mut params = json!({ "session_id": live, "text": prompt, "profile": profile });
+                if queued {
+                    params["queued"] = json!(true);
+                }
+                let submitted = gateway.request("prompt.submit", params).await?;
                 if let Some(row_id) = submitted.get("user_row_id").and_then(Value::as_i64) {
                     let live = live.clone();
                     queue.queue(move |app, cx| {
@@ -1118,6 +1144,163 @@ impl AppState {
             }
         });
         cx.notify();
+    }
+
+    // ── queued messages (see queued.rs) ──
+
+    /// Queues are kept per server and bot.
+    fn queue_key(&self, bot: &str) -> String {
+        format!("{}/{bot}", self.config.active_server.as_deref().unwrap_or_default())
+    }
+
+    /// The open bot's queue, when it has messages waiting.
+    pub fn queued(&self) -> Option<&MessageQueue> {
+        self.queues.get(&self.queue_key(&self.active_bot)).filter(|q| !q.is_empty())
+    }
+
+    fn active_queue(&mut self) -> &mut MessageQueue {
+        let key = self.queue_key(&self.active_bot);
+        self.queues.entry(key).or_default()
+    }
+
+    /// Queues `text` and the waiting attachments to send after the current
+    /// answer. With nothing answering it goes out now.
+    pub fn queue_message(&mut self, text: &str, cx: &mut Context<Self>) {
+        let attachments = std::mem::take(&mut self.pending);
+        if text.trim().is_empty() && attachments.is_empty() {
+            return;
+        }
+        if !self.streaming && self.connected {
+            self.submit_with(text.to_string(), text.to_string(), attachments, false, cx);
+            return;
+        }
+        self.next_attachment += 1;
+        let message = QueuedMessage { id: self.next_attachment, text: text.to_string(), attachments };
+        self.active_queue().items.push(message);
+        cx.notify();
+    }
+
+    pub fn remove_queued(&mut self, id: u64, cx: &mut Context<Self>) {
+        self.active_queue().remove(id);
+        cx.notify();
+    }
+
+    /// Takes a queued message back out to edit it: its attachments rejoin
+    /// the waiting ones and its text is returned for the message box.
+    pub fn take_queued(&mut self, id: u64, cx: &mut Context<Self>) -> Option<String> {
+        let message = self.active_queue().remove(id)?;
+        self.pending.extend(message.attachments);
+        cx.notify();
+        Some(message.text)
+    }
+
+    /// Delivers a queued message into the running answer instead of after it.
+    pub fn steer_queued(&mut self, id: u64, cx: &mut Context<Self>) {
+        let steerable = self.queued().and_then(|q| q.items.iter().find(|m| m.id == id)).is_some_and(QueuedMessage::can_steer);
+        if !self.streaming || !steerable {
+            return;
+        }
+        if let Some(message) = self.active_queue().remove(id) {
+            self.steer(&message.text, cx);
+        }
+        cx.notify();
+    }
+
+    /// Sends a queued message now, while nothing is answering.
+    pub fn send_queued_now(&mut self, id: u64, cx: &mut Context<Self>) {
+        if self.streaming {
+            return;
+        }
+        if let Some(message) = self.active_queue().remove(id) {
+            self.send_queued(message, cx);
+        }
+    }
+
+    /// Lifts a park; with nothing answering, the next message goes out.
+    pub fn resume_queue(&mut self, cx: &mut Context<Self>) {
+        self.active_queue().parked = false;
+        if !self.streaming && self.connected {
+            let (bot, live) = (self.active_bot.clone(), self.live_session.clone());
+            self.after_turn(&bot, &live, true, cx);
+        }
+        cx.notify();
+    }
+
+    fn send_queued(&mut self, message: QueuedMessage, cx: &mut Context<Self>) {
+        if let Some(command) = slash::parse(&message.text) {
+            self.pending.extend(message.attachments);
+            self.run_slash(command, cx);
+        } else {
+            self.submit_with(message.text.clone(), message.text, message.attachments, true, cx);
+        }
+        cx.notify();
+    }
+
+    /// A turn ended on `bot`'s chat `live`. A finished turn sends the next
+    /// queued message; a stopped or failed one parks the queue.
+    fn after_turn(&mut self, bot: &str, live: &str, completed: bool, cx: &mut Context<Self>) {
+        let key = self.queue_key(bot);
+        let Some(queue) = self.queues.get_mut(&key) else { return };
+        if !completed {
+            queue.park();
+            return;
+        }
+        if bot == self.active_bot {
+            if let Some(message) = queue.next() {
+                self.send_queued(message, cx);
+            }
+            return;
+        }
+        // A bot whose chat isn't open: its messages go out unseen and show
+        // when the chat is opened. Commands wait for the chat to be open.
+        if queue.items.first().is_some_and(QueuedMessage::is_command) {
+            queue.park();
+            return;
+        }
+        if let Some(message) = queue.next() {
+            self.submit_in_background(bot, live, message);
+        }
+    }
+
+    /// Sends a queued message to a bot whose chat isn't open.
+    fn submit_in_background(&mut self, bot: &str, live: &str, message: QueuedMessage) {
+        let Some(gateway) = self.gateway.clone() else { return };
+        let (profile, live) = (bot.to_string(), live.to_string());
+        self.mark_running(&live, &profile);
+        let generation = self.generation;
+        let queue = self.queue.clone();
+        runtime().spawn(async move {
+            let result: Result<(), String> = async {
+                let mut refs = Vec::new();
+                for attachment in &message.attachments {
+                    if let Some(reference) = attachments::upload(&gateway, &live, attachment).await? {
+                        refs.push(reference);
+                    }
+                }
+                let has_images = message.attachments.iter().any(|a| a.kind == attachments::Kind::Image);
+                let prompt = attachments::compose_prompt(&message.text, &refs, has_images);
+                gateway
+                    .request("prompt.submit", json!({ "session_id": live, "text": prompt, "profile": profile, "queued": true }))
+                    .await
+                    .map(|_| ())
+            }
+            .await;
+            if let Err(e) = result {
+                queue.queue(move |app, cx| {
+                    if app.generation != generation {
+                        return;
+                    }
+                    app.mark_finished(&live);
+                    // Back at the front, held, so it isn't lost.
+                    let key = app.queue_key(&profile);
+                    let held = app.queues.entry(key).or_default();
+                    held.items.insert(0, message);
+                    held.parked = true;
+                    app.error = format!("Couldn't send a queued message to {profile}: {e}");
+                    cx.notify();
+                });
+            }
+        });
     }
 
     pub fn stop(&mut self, cx: &mut Context<Self>) {
@@ -1757,3 +1940,5 @@ mod tests {
 
 #[cfg(test)]
 mod transcript_tests;
+#[cfg(test)]
+mod queue_tests;

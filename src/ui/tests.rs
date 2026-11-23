@@ -555,3 +555,38 @@ fn the_window_draws_its_frame_only_where_the_compositor_does_not(cx: &mut TestAp
     cx.simulate_window_decorations_change(h.window, gpui_kit::Decorations::Server);
     h.ui(cx, |w, _| assert!(w.try_find("title-bar").is_none()));
 }
+
+#[gpui_kit::test]
+fn the_queue_button_and_panel(cx: &mut TestAppContext) {
+    let h = open(cx);
+    h.ui(cx, |w, _| assert!(w.try_find("queue").is_none(), "nothing to queue behind while idle"));
+    h.state.update(cx, |s, cx| {
+        s.streaming = true;
+        cx.notify();
+    });
+    h.focus_composer(cx);
+    h.ui(cx, |w, cx| w.input("run the tests after this", cx));
+    // Enter would steer; the Queue button sends after the answer instead.
+    h.ui(cx, |w, cx| w.click("queue", cx));
+    assert_eq!(h.composer_text(cx), "");
+    let id = h.state.read_with(cx, |s, _| {
+        let queue = s.queued().expect("a queued message");
+        assert_eq!(queue.items[0].text, "run the tests after this");
+        queue.items[0].id
+    });
+    h.ui(cx, |w, _| {
+        assert!(w.try_find("queue-panel").is_some());
+        assert!(w.try_find(super::widgets::id("queued-steer", id)).is_some(), "plain text can steer now");
+    });
+
+    // Edit takes it back into the message box.
+    h.ui(cx, |w, cx| w.click(super::widgets::id("queued-edit", id), cx));
+    assert_eq!(h.composer_text(cx), "run the tests after this");
+    h.ui(cx, |w, _| assert!(w.try_find("queue-panel").is_none()));
+
+    // Queue it again, then remove it.
+    h.ui(cx, |w, cx| w.click("queue", cx));
+    let id = h.state.read_with(cx, |s, _| s.queued().unwrap().items[0].id);
+    h.ui(cx, |w, cx| w.click(super::widgets::id("queued-remove", id), cx));
+    assert!(h.state.read_with(cx, |s, _| s.queued().is_none()));
+}
