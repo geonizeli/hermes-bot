@@ -10,6 +10,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use serde_json::Value;
 
+use super::motion;
 use super::state::{AppEvent, AppState, Provider};
 use super::state::commands::Suggestion;
 use super::theme::colors;
@@ -275,7 +276,10 @@ impl Composer {
                     .py(px(16.))
                     .flex()
                     .justify_center()
+                    .items_center()
+                    .gap(px(8.))
                     .text_color(c.muted)
+                    .when(loading, |d| d.child(widgets::spinner(14.)))
                     .child(if loading { "Loading models…" } else { "No models match" })
                     .into_any_element(),
             );
@@ -310,6 +314,7 @@ impl Composer {
             }))
             .child(gpui_kit::component::input::Input::new(&self.picker_search))
             .child(ident("model-list").max_h(px(400.)).overflow_y_scroll().flex().flex_col().children(children))
+            .with_animation("model-picker-in", Animation::new(motion::QUICK).with_easing(motion::ease_out), rise_from_composer)
     }
 
     fn render_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -351,7 +356,13 @@ impl Composer {
             .border_color(c.border)
             .rounded(c.radius)
             .children(rows)
+            .with_animation("slash-menu-in", Animation::new(motion::QUICK).with_easing(motion::ease_out), rise_from_composer)
     }
+}
+
+/// Popups above the message box rise out of it as they open.
+fn rise_from_composer<E: Styled>(el: E, t: f32) -> E {
+    el.opacity(t).mb(px(8. - 6. * (1. - t)))
 }
 
 /// Capabilities of the current model, from whichever provider lists it.
@@ -513,12 +524,16 @@ impl Render for Composer {
                 .flex()
                 .items_center()
                 .justify_center()
-                .bg(if live { c.accent } else { c.border })
                 .when(live, |d| d.cursor_pointer().hover(|s| s.opacity(0.85)).on_click(cx.listener(|this, _, window, cx| this.send(window, cx))))
                 .child(if stopping {
                     div().size(px(12.)).rounded(px(2.)).bg(c.accent_foreground).into_any_element()
                 } else {
                     div().text_size(px(18.)).font_weight(FontWeight::BOLD).text_color(ink).child("↑").into_any_element()
+                })
+                // Lights up as soon as there's something to send.
+                .with_spring("send-live", SpringAnimation::new(motion::settle()).to(live), {
+                    let (off, on) = (c.border, c.accent);
+                    move |d, p| d.bg(p.interpolate_clamped(off, on))
                 })
         };
 
@@ -570,7 +585,6 @@ impl Render for Composer {
             .rounded(c.radius)
             .bg(c.raised)
             .border_1()
-            .border_color(if focused { c.accent.alpha(0.6) } else { c.border })
             .capture_action(cx.listener(|this, _: &MoveUp, window, cx| {
                 if this.menu_open(window, cx) {
                     let n = this.suggestions.len();
@@ -609,5 +623,10 @@ impl Render for Composer {
             .when(menu_open, |d| d.child(self.render_menu(cx)))
             .when(self.picker_open, |d| d.child(self.render_picker(&current_model, &current_provider, cx)))
             .when_some(self.effort_menu.as_ref(), |d, menu| d.child(menu.render(close_effort.clone(), cx)))
+            // The border warms to the accent while you type.
+            .with_spring("composer-focus", SpringAnimation::new(motion::settle()).to(focused), {
+                let (off, on) = (c.border, c.accent.alpha(0.6));
+                move |d, p| d.border_color(p.interpolate_clamped(off, on))
+            })
     }
 }

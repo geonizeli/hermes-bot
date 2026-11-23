@@ -8,6 +8,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use serde_json::Value;
 
+use super::motion;
 use super::screen::{ScreenState, ScreenView};
 use super::state::AppState;
 use super::theme::{Colors, colors};
@@ -211,14 +212,15 @@ pub fn jobs_panel(state: &Entity<AppState>, expanded: &Entity<HashSet<String>>, 
                         }),
                 )
                 .when(is_open, |d| {
-                    d.child(div().pl(px(16.)).pt(px(8.)).flex().flex_col().gap(px(4.)).children(details.into_iter().map(|(k, v)| {
+                    let rows = div().pl(px(16.)).pt(px(8.)).flex().flex_col().gap(px(4.)).children(details.into_iter().map(|(k, v)| {
                         div()
                             .flex()
                             .gap(px(10.))
                             .text_size(px(12.))
                             .child(div().w(px(76.)).flex_none().text_color(c.muted).child(k))
                             .child(div().flex_1().child(v))
-                    })))
+                    }));
+                    d.child(motion::rise_in(rows, id("job-details-in", &key), -4., motion::BASE))
                     .when(!error.is_empty(), |d| d.child(div().pl(px(16.)).pt(px(4.)).text_size(px(12.)).text_color(c.danger).child(error.clone())))
                     .when(!text("prompt").is_empty(), |d| {
                         d.child(div().pl(px(16.)).pt(px(6.)).text_size(px(12.)).italic().text_color(c.muted).child(text("prompt")))
@@ -228,6 +230,23 @@ pub fn jobs_panel(state: &Entity<AppState>, expanded: &Entity<HashSet<String>>, 
         })
         .collect();
     let empty = jobs.is_empty() && !s.jobs_loading && s.jobs_error.is_empty();
+    // The first load shows the shape of a couple of jobs; refreshes keep the
+    // list and spin in the header.
+    let placeholders = (jobs.is_empty() && s.jobs_loading).then(|| {
+        div().flex().flex_col().gap(px(8.)).children((0..3).map(|i| {
+            div()
+                .mx(px(12.))
+                .p(px(12.))
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .rounded(c.radius)
+                .bg(c.raised.alpha(0.3))
+                .child(motion::skeleton(id("job-loading-title", i), gpui_kit::relative(0.7 - 0.1 * i as f32), 13., &c))
+                .child(motion::skeleton(id("job-loading-schedule", i), px(90.), 10., &c))
+                .child(motion::skeleton(id("job-loading-next", i), px(70.), 10., &c))
+        }))
+    });
     div()
         .size_full()
         .flex()
@@ -251,6 +270,7 @@ pub fn jobs_panel(state: &Entity<AppState>, expanded: &Entity<HashSet<String>>, 
                 .flex_col()
                 .gap(px(8.))
                 .children(jobs)
+                .children(placeholders)
                 .when(empty, |d| {
                     d.child(
                         div()

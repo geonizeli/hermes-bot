@@ -10,6 +10,7 @@ use gpui_kit::component::{Sizable as _, Theme as KitTheme};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use super::motion;
 use super::theme::{Colors, colors, tint};
 
 /// An identified element. Test builds register it so headless UI tests can
@@ -247,6 +248,7 @@ impl PopupMenu {
                 .child(item.label.clone())
                 .into_any_element()
         });
+        let upward = self.upward;
         let menu = ident("popup-menu")
             .occlude()
             .min_w(px(180.))
@@ -257,7 +259,12 @@ impl PopupMenu {
             .rounded(c.radius)
             .shadow_lg()
             .children(items)
-            .on_mouse_down_out(move |_, window, cx| close(window, cx));
+            .on_mouse_down_out(move |_, window, cx| close(window, cx))
+            // Unfolds from where it was opened.
+            .with_animation("popup-menu-in", Animation::new(motion::QUICK).with_easing(motion::ease_out), move |d, t| {
+                let shift = 6. * (1. - t);
+                d.opacity(t).relative().top(px(if upward { shift } else { -shift }))
+            });
         deferred(
             anchored()
                 .position(self.position)
@@ -270,16 +277,22 @@ impl PopupMenu {
 }
 
 /// A dialog's frame: the window dimmed, the content in a centered card.
+/// The dimming fades in and the card rises into place.
 pub fn modal(key: &'static str, width: f32, content: impl IntoElement, c: &Colors) -> Ident {
+    let scrim = div().absolute().inset_0().bg(black().alpha(0.5)).with_animation(
+        SharedString::from(format!("{key}-scrim-in")),
+        Animation::new(motion::BASE).with_easing(motion::ease_out),
+        |d, t| d.opacity(t),
+    );
     ident(key)
         .absolute()
         .inset_0()
         .occlude()
-        .bg(black().alpha(0.5))
         .flex()
         .items_center()
         .justify_center()
         .p(px(20.))
+        .child(scrim)
         .child(
             ident(SharedString::from(format!("{key}-card")))
                 .w(px(width))
@@ -293,7 +306,12 @@ pub fn modal(key: &'static str, width: f32, content: impl IntoElement, c: &Color
                 .rounded(c.radius)
                 .shadow_lg()
                 .text_color(c.foreground)
-                .child(content),
+                .child(content)
+                .with_animation(
+                    SharedString::from(format!("{key}-card-in")),
+                    Animation::new(motion::BASE).with_easing(motion::ease_out),
+                    |d, t| d.opacity(t).relative().top(px(16. * (1. - t))),
+                ),
         )
 }
 

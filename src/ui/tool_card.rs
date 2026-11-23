@@ -4,6 +4,7 @@
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use super::motion;
 use super::state::{AppState, Row, Todo};
 use super::theme::{Colors, colors};
 use super::widgets::{self, ident, id, mono};
@@ -117,10 +118,15 @@ pub fn render(ix: usize, row: &Row, state: &Entity<AppState>, cx: &App) -> AnyEl
             })
         })
         .child(if row.done {
+            // The mark lands as the call finishes.
+            let settled = motion::fresh(row.settled_at, motion::SLOW);
             div()
                 .text_size(px(12.))
                 .text_color(if failed { c.danger } else { tint })
                 .child(if failed { "✕" } else { "✓" })
+                .with_animation(id("tool-mark", row.id), Animation::new(motion::BASE).with_easing(motion::ease_out), move |d, t| {
+                    if settled { d.opacity(t).text_size(px(6. + 6. * t)) } else { d }
+                })
                 .into_any_element()
         } else {
             widgets::spinner(14.).into_any_element()
@@ -155,7 +161,7 @@ pub fn render(ix: usize, row: &Row, state: &Entity<AppState>, cx: &App) -> AnyEl
         if !row.result.is_empty() {
             sections.push(section("Result", div().child(row.result.clone()).into_any_element(), tint, cx).into_any_element());
         }
-        ident(id("tool-body", row.id))
+        let body = ident(id("tool-body", row.id))
             .w_full()
             .max_h(px(520.))
             .overflow_y_scroll()
@@ -167,7 +173,8 @@ pub fn render(ix: usize, row: &Row, state: &Entity<AppState>, cx: &App) -> AnyEl
             .flex()
             .flex_col()
             .gap(px(8.))
-            .children(sections)
+            .children(sections);
+        motion::rise_in_when(motion::fresh(row.toggled_at, motion::SLOW), body, id("tool-body-in", row.id), -6., motion::BASE)
     });
 
     div()

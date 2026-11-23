@@ -12,6 +12,7 @@ use gpui_kit::*;
 
 use super::composer::Composer;
 use super::markdown_view;
+use super::motion;
 use super::screen::ScreenView;
 use super::side_panel;
 use super::state::{AppState, Role, Row};
@@ -209,9 +210,14 @@ impl ChatView {
                             div().w_full().h(px(3.)).rounded(px(1.5)).bg(c.border).child(
                                 div()
                                     .h_full()
-                                    .w(relative(fill))
                                     .rounded(px(1.5))
-                                    .bg(if u.percent > 85.0 { c.danger } else { c.accent }),
+                                    .bg(if u.percent > 85.0 { c.danger } else { c.accent })
+                                    // Fills to the new amount after each turn.
+                                    .with_spring(
+                                        "context-fill",
+                                        SpringAnimation::new(motion::settle()).to(fill).from(0.0),
+                                        |d, f| d.w(relative(f.clamp(0.0, 1.0))),
+                                    ),
                             ),
                         ),
                 )
@@ -360,25 +366,25 @@ fn render_assistant(ix: usize, row: &Row, state: &Entity<AppState>, window: &mut
             })
             .child(label);
         if thinking {
-            el.with_animation(
-                id("thinking", row.id),
-                Animation::new(Duration::from_millis(1400)).repeat().with_easing(pulsating_between(0.4, 1.0)),
-                |el, delta| el.opacity(delta),
-            )
-            .into_any_element()
+            motion::breathe(el, id("thinking", row.id), 0.4).into_any_element()
         } else {
             el.into_any_element()
         }
     });
+    let opened = motion::fresh(row.toggled_at, motion::SLOW);
     let reasoning = (row.show_reasoning && !row.reasoning.is_empty()).then(|| {
-        div()
+        let body = div()
             .border_l_2()
             .border_color(c.magenta.alpha(0.6))
             .pl(px(14.))
             .text_size(px(14.))
             .text_color(c.muted)
-            .child(row.reasoning.clone())
+            .child(row.reasoning.clone());
+        motion::rise_in_when(opened, body, id("reasoning-in", row.id), -6., motion::BASE)
     });
+    // A caret breathes after the text while the answer streams in.
+    let caret = (!row.done && !row.text.is_empty())
+        .then(|| motion::breathe(div().w(px(8.)).h(px(16.)).bg(c.accent.alpha(0.8)), id("caret", row.id), 0.15));
     let body = (!row.text.is_empty()).then(|| markdown_view::render(row.id, &row.text, state, window, cx));
     let actions = (row.done && !row.text.is_empty()).then(|| {
         let st = state.clone();
@@ -405,6 +411,7 @@ fn render_assistant(ix: usize, row: &Row, state: &Entity<AppState>, window: &mut
         .children(reasoning_toggle)
         .children(reasoning)
         .children(body)
+        .children(caret)
         .children(actions)
         .into_any_element()
 }
@@ -425,7 +432,12 @@ fn render_command(row: &Row, window: &mut Window, cx: &mut App) -> AnyElement {
         .border_color(c.border)
         .font_family(mono(cx))
         .text_size(px(12.))
-        .child(div().text_color(c.accent).child(if row.done { row.name.clone() } else { format!("{}  · running…", row.name) }))
+        .child(if row.done {
+            div().text_color(c.accent).child(row.name.clone()).into_any_element()
+        } else {
+            motion::breathe(div().text_color(c.accent).child(format!("{}  · running…", row.name)), id("command-running", row.id), 0.45)
+                .into_any_element()
+        })
         .when(!row.text.is_empty(), |d| d.child(div().text_color(c.foreground).child(row.text.clone())))
         .into_any_element()
 }
@@ -433,7 +445,7 @@ fn render_command(row: &Row, window: &mut Window, cx: &mut App) -> AnyElement {
 /// The dots shown while waiting for the first word of an answer.
 fn waiting_dots(cx: &App) -> impl IntoElement {
     let c = colors(cx);
-    div().pt(px(14.)).flex().gap(px(6.)).children((0..3).map(|i| {
+    let dots = div().pt(px(14.)).flex().gap(px(6.)).children((0..3).map(|i| {
         div().size(px(7.)).rounded_full().bg(c.muted).with_animation(
             id("waiting-dot", i),
             Animation::new(Duration::from_millis(1280)).repeat(),
@@ -444,7 +456,42 @@ fn waiting_dots(cx: &App) -> impl IntoElement {
                 el.opacity(1.0 - dip * 0.75)
             },
         )
-    }))
+    }));
+    motion::fade_in(dots, "waiting-dots-in", motion::BASE)
+}
+
+/// What the chat shows while it connects or opens: the shape of a
+/// conversation, breathing, where the messages will be.
+fn loading_transcript(cx: &App) -> impl IntoElement {
+    let c = colors(cx);
+    let exchange = |n: usize, lines: usize| {
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(px(18.))
+            .child(div().w_full().flex().justify_end().child(motion::skeleton(id("loading-ask", n), px(220. + 60. * (n % 2) as f32), 40., c)))
+            .child(motion::skeleton_lines(&format!("loading-answer-{n}"), lines, 14., c))
+    };
+    ident("chat-loading")
+        .absolute()
+        .inset_0()
+        .overflow_hidden()
+        .px(px(24.))
+        .pt(px(24.))
+        .flex()
+        .justify_center()
+        .child(
+            div()
+                .w_full()
+                .max_w(px(COLUMN_MAX))
+                .flex()
+                .flex_col()
+                .gap(px(28.))
+                .child(exchange(0, 3))
+                .child(exchange(1, 5))
+                .child(exchange(2, 2)),
+        )
 }
 
 fn render_row(ix: usize, state: &Entity<AppState>, composer: &WeakEntity<Composer>, window: &mut Window, cx: &mut App) -> AnyElement {
@@ -464,6 +511,16 @@ fn render_row(ix: usize, state: &Entity<AppState>, composer: &WeakEntity<Compose
         Role::Info => div().text_size(px(13.)).italic().text_color(c.muted).child(row.text.clone()).into_any_element(),
     };
     let last = ix + 1 == count;
+    // Messages that arrive while the chat is open rise into place; your own
+    // come up from the composer a little further.
+    let lift = if row.role == Role::User { 14. } else { 8. };
+    let column = div()
+        .w_full()
+        .max_w(px(COLUMN_MAX))
+        .flex()
+        .flex_col()
+        .child(content)
+        .when(last && waiting, |d| d.child(waiting_dots(cx)));
     div()
         .w_full()
         .px(px(24.))
@@ -471,15 +528,7 @@ fn render_row(ix: usize, state: &Entity<AppState>, composer: &WeakEntity<Compose
         .when(last, |d| d.pb(px(24.)))
         .flex()
         .justify_center()
-        .child(
-            div()
-                .w_full()
-                .max_w(px(COLUMN_MAX))
-                .flex()
-                .flex_col()
-                .child(content)
-                .when(last && waiting, |d| d.child(waiting_dots(cx))),
-        )
+        .child(motion::rise_in_when(motion::fresh(row.born, motion::SLOW * 2), column, id("row-in", row.id), lift, motion::BASE))
         .into_any_element()
 }
 
@@ -501,16 +550,20 @@ impl Render for ChatView {
         let streaming = s.streaming;
         let following = s.list.is_following_tail();
         let list_state = s.list.clone();
+        let chat_key = s.active_bot.clone();
 
         let state = self.state.clone();
         let composer = self.composer.downgrade();
         let conversation = list(list_state, move |ix, window, cx| render_row(ix, &state, &composer, window, cx))
             .size_full();
+        // Each chat fades in as it opens, so switching bots reads as a change
+        // of place rather than a jump.
+        let conversation = motion::rise_in(div().size_full().child(conversation), id("conversation-in", &chat_key), 6., motion::SLOW);
 
         let jump = (!following && !empty && !loading).then(|| {
             let st = self.state.clone();
             let hover = c.raised;
-            div().absolute().bottom(px(16.)).left_0().right_0().flex().justify_center().child(
+            let button = div().absolute().bottom(px(16.)).left_0().right_0().flex().justify_center().child(
                 ident("jump-down")
                     .size(px(36.))
                     .flex()
@@ -529,7 +582,10 @@ impl Render for ChatView {
                         st.read(cx).scroll_to_end();
                         cx.refresh_windows();
                     }),
-            )
+            );
+            button.with_animation("jump-down-in", Animation::new(motion::QUICK).with_easing(motion::ease_out), |d, t| {
+                d.opacity(t).bottom(px(16. - 10. * (1. - t)))
+            })
         });
 
         let conversation_area = div()
@@ -537,14 +593,14 @@ impl Render for ChatView {
             .flex_1()
             .min_h_0()
             .when(!loading, |d| d.child(conversation))
-            .when(loading, |d| d.child(div().absolute().inset_0().flex().items_center().justify_center().child(widgets::spinner(40.))))
+            .when(loading, |d| d.child(loading_transcript(cx)))
             .when(empty && !loading, |d| d.child(self.render_empty(cx)))
             .children(jump);
 
         // Errors stay until dismissed or the next action clears them.
         let error_bar = (!error.is_empty()).then(|| {
             let st = self.state.clone();
-            div().w_full().px(px(24.)).pb(px(8.)).flex().justify_center().child(
+            let bar = div().w_full().px(px(24.)).pb(px(8.)).flex().justify_center().child(
                 div()
                     .w_full()
                     .max_w(px(COLUMN_MAX))
@@ -566,7 +622,8 @@ impl Render for ChatView {
                             .child("✕")
                             .on_click(move |_, _, cx| st.update(cx, |s, cx| s.set_error("", cx))),
                     ),
-            )
+            );
+            motion::rise_in(bar, "error-in", 8., motion::BASE)
         });
 
         let composer = connected.then(|| {
@@ -604,18 +661,23 @@ impl Render for ChatView {
             } else {
                 side_panel::jobs_panel(&self.state, &self.jobs_expanded, cx)
             };
+            let panel_width = if docked { PANEL_WIDTH } else { PANEL_WIDTH.min(width - 40.) };
             ident("side-panel")
                 .absolute()
                 .top(px(HEADER_HEIGHT))
                 .bottom_0()
                 .right_0()
-                .w(px(if docked { PANEL_WIDTH } else { PANEL_WIDTH.min(width - 40.) }))
+                .w(px(panel_width))
                 .occlude()
                 .bg(c.surface)
                 .border_l_1()
                 .border_color(c.border)
                 .when(!docked, |d| d.shadow_lg())
                 .child(content)
+                // Slides in from the window's edge.
+                .with_animation("side-panel-in", Animation::new(motion::SLOW).with_easing(motion::ease_out), move |d, t| {
+                    d.right(px(-panel_width * 0.35 * (1. - t))).opacity(t)
+                })
         });
 
         let expanded_screen = (self.screen_expanded && has_bot).then(|| {
@@ -648,6 +710,7 @@ impl Render for ChatView {
                         .child("Collapse screen")
                         .on_click(move |_, w, cx| collapse(false, w, cx)),
                 )
+                .with_animation("expanded-screen-in", Animation::new(motion::BASE).with_easing(motion::ease_out), |d, t| d.opacity(t))
         });
 
         let drop_target = c.accent;
@@ -665,8 +728,13 @@ impl Render for ChatView {
                     .min_h_0()
                     .flex()
                     .child(chat_area)
-                    // Holds the docked panel's place.
-                    .child(div().w(px(panel_space)).flex_none()),
+                    // Holds the docked panel's place; the chat column eases
+                    // aside as the panel opens and back as it closes.
+                    .child(div().flex_none().with_spring(
+                        "panel-space",
+                        SpringAnimation::new(motion::settle()).to(px(panel_space)),
+                        |d, w| d.w(w.max(px(0.))),
+                    )),
             )
             .children(expanded_screen)
             .children(panel)

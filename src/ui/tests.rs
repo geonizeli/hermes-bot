@@ -482,3 +482,26 @@ fn live_screen_shows_frames(cx: &mut TestAppContext) {
     h.ui(cx, |w, cx| w.click("toggle-screen", cx));
     h.state.update(cx, |s, _| s.disconnect());
 }
+
+#[gpui_kit::test]
+fn loading_shows_placeholders_where_content_will_be(cx: &mut TestAppContext) {
+    let h = open(cx);
+    h.state.update(cx, |s, cx| {
+        s.chat_loading = true;
+        s.bots.clear();
+        cx.notify();
+    });
+    h.ui(cx, |w, _| {
+        assert!(w.try_find("chat-loading").is_some(), "the chat shows its loading shape");
+    });
+
+    h.state.update(cx, |s, cx| {
+        s.chat_loading = false;
+        s.bots = vec![Bot { name: "default".into(), display_name: "Hermes".into(), ..Default::default() }];
+        cx.notify();
+    });
+    h.ui(cx, |w, _| {
+        assert!(w.try_find("chat-loading").is_none(), "the placeholders go once the chat opens");
+        assert!(w.try_find(super::widgets::id("bot", "default")).is_some());
+    });
+}
