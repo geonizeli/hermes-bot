@@ -41,6 +41,10 @@ pub struct UiPrefs {
     /// "jobs" or "screen".
     #[serde(default = "jobs_tab")]
     pub side_panel_tab: String,
+    /// "system", "dark", "light" or "omarchy"; unset means the default
+    /// (Omarchy's theme where it's installed, otherwise the system's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
 }
 
 fn yes() -> bool {
@@ -53,7 +57,7 @@ fn jobs_tab() -> String {
 
 impl Default for UiPrefs {
     fn default() -> Self {
-        UiPrefs { side_panel_open: true, side_panel_tab: jobs_tab() }
+        UiPrefs { side_panel_open: true, side_panel_tab: jobs_tab(), theme: None }
     }
 }
 

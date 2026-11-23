@@ -11,7 +11,7 @@ use super::dialogs::{ConfirmModel, RequestDialog, SetupDialog, render_confirm};
 use super::edit_bot::EditBotDialog;
 use super::motion;
 use super::state::{AppEvent, AppState};
-use super::theme::colors;
+use super::theme::{self, colors};
 use super::widgets::{self, ident, Action, MenuItem, PopupMenu, id};
 
 pub struct RootView {
@@ -45,7 +45,10 @@ impl RootView {
                 cx,
             )
         });
+        theme::set_appearance(window.appearance(), cx);
         let subscriptions = vec![
+            // "Match system" follows the desktop's light/dark switch live.
+            cx.observe_window_appearance(window, |_, window, cx| theme::set_appearance(window.appearance(), cx)),
             cx.observe(&state, |_, _, cx| cx.notify()),
             cx.observe(&setup, |_, _, cx| cx.notify()),
             cx.observe(&request, |_, _, cx| cx.notify()),
@@ -76,6 +79,21 @@ impl RootView {
                 cx.notify();
             });
         })
+    }
+
+    /// The themes to pick from, the one in effect checked.
+    fn theme_menu(&self, at: Point<Pixels>, cx: &App) -> PopupMenu {
+        let theme = theme::theme_state(cx);
+        let current = theme.effective();
+        let items = theme
+            .choices()
+            .into_iter()
+            .map(|choice| {
+                let state = self.state.clone();
+                MenuItem::new(choice.label(), move |_, cx| state.update(cx, |s, cx| s.set_theme(choice, cx))).checked(choice == current)
+            })
+            .collect();
+        PopupMenu::new(at, items).upward()
     }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -289,6 +307,13 @@ impl RootView {
                         }
                         let setup = this.setup.clone();
                         items.push(MenuItem::new("Manage servers…", move |window, cx| setup.update(cx, |d, cx| d.show(window, cx))));
+                        let (root, at) = (cx.entity().downgrade(), e.position());
+                        items.push(MenuItem::new("Theme…", move |_, cx| {
+                            let _ = root.update(cx, |this, cx| {
+                                this.menu = Some(this.theme_menu(at, cx));
+                                cx.notify();
+                            });
+                        }));
                         this.menu = Some(PopupMenu::new(e.position(), items).upward());
                         cx.notify();
                     })),

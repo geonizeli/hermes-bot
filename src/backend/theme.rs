@@ -1,8 +1,11 @@
-//! Omarchy theme and Hyprland rounding, read apart from the UI so it can be tested.
+//! Themes, read apart from the UI so they can be tested.
 //!
-//! The palette comes from `~/.local/state/omarchy/current/theme/colors.toml`.
-//! A theme switch replaces files and directories under `current`, so the
-//! watcher re-arms itself after every change instead of trusting one inode.
+//! hermes-bot ships a dark and a light theme and can follow the desktop's
+//! light/dark preference. On Omarchy it can also use the live Omarchy theme,
+//! from `~/.local/state/omarchy/current/theme/colors.toml`. A theme switch
+//! replaces files and directories under `current`, so the watcher re-arms
+//! itself after every change instead of trusting one inode. Under Hyprland
+//! the corners follow its rounding.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
@@ -36,9 +39,14 @@ pub struct Palette {
 }
 
 impl Default for Palette {
-    /// Used when Omarchy isn't installed: a neutral dark palette with
-    /// Omarchy's fallback yellow accent.
     fn default() -> Self {
+        Palette::dark()
+    }
+}
+
+impl Palette {
+    /// The built-in dark theme: neutral greys and the icon's yellow.
+    pub fn dark() -> Self {
         Palette {
             accent: "#FFD60A".into(),
             background: "#0e0e10".into(),
@@ -57,6 +65,112 @@ impl Default for Palette {
             orange: "#f0883e".into(),
         }
     }
+
+    /// The built-in light theme. The accent darkens to an amber so it still
+    /// reads as text on white.
+    pub fn light() -> Self {
+        Palette {
+            accent: "#b07800".into(),
+            background: "#fbfbfa".into(),
+            surface: "#f2f2f0".into(),
+            raised: "#e8e8e5".into(),
+            foreground: "#1d1d1f".into(),
+            muted: "#6b6b70".into(),
+            border: "#d9d9d5".into(),
+            danger: "#d1242f".into(),
+            red: "#cf222e".into(),
+            green: "#1a7f37".into(),
+            yellow: "#9a6700".into(),
+            blue: "#0969da".into(),
+            magenta: "#8250df".into(),
+            cyan: "#1b7c83".into(),
+            orange: "#bc4c00".into(),
+        }
+    }
+}
+
+/// The theme the user picked. `None` in the settings means "the default":
+/// Omarchy's when it's installed, otherwise the system's preference.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThemeChoice {
+    /// The built-in dark or light theme, whichever the desktop prefers.
+    System,
+    Dark,
+    Light,
+    /// The live Omarchy theme.
+    Omarchy,
+}
+
+impl ThemeChoice {
+    pub const ALL: [ThemeChoice; 4] = [ThemeChoice::System, ThemeChoice::Dark, ThemeChoice::Light, ThemeChoice::Omarchy];
+
+    /// The name saved in the settings and typed after `/skin`.
+    pub fn key(self) -> &'static str {
+        match self {
+            ThemeChoice::System => "system",
+            ThemeChoice::Dark => "dark",
+            ThemeChoice::Light => "light",
+            ThemeChoice::Omarchy => "omarchy",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ThemeChoice::System => "Match system",
+            ThemeChoice::Dark => "Dark",
+            ThemeChoice::Light => "Light",
+            ThemeChoice::Omarchy => "Omarchy",
+        }
+    }
+
+    pub fn parse(key: &str) -> Option<ThemeChoice> {
+        let key = key.trim().to_lowercase();
+        ThemeChoice::ALL.into_iter().find(|c| c.key() == key)
+    }
+
+    /// The choice in effect: the saved one, or the default when nothing is
+    /// saved. Omarchy falls back to the system's when it isn't installed.
+    pub fn effective(saved: Option<ThemeChoice>, omarchy: bool) -> ThemeChoice {
+        match saved {
+            Some(ThemeChoice::Omarchy) | None if omarchy => ThemeChoice::Omarchy,
+            Some(ThemeChoice::Omarchy) | None => ThemeChoice::System,
+            Some(choice) => choice,
+        }
+    }
+}
+
+/// What the window is drawn with, once the choice meets the desktop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThemeSource {
+    Dark,
+    Light,
+    Omarchy,
+}
+
+pub fn resolve(choice: ThemeChoice, system_dark: bool) -> ThemeSource {
+    match choice {
+        ThemeChoice::Omarchy => ThemeSource::Omarchy,
+        ThemeChoice::Dark => ThemeSource::Dark,
+        ThemeChoice::Light => ThemeSource::Light,
+        ThemeChoice::System if system_dark => ThemeSource::Dark,
+        ThemeChoice::System => ThemeSource::Light,
+    }
+}
+
+/// Corner radius: Hyprland's rounding when running under it, so the window
+/// matches its neighbours; otherwise sharp for Omarchy (its default) and a
+/// gentle rounding for the built-in themes.
+pub fn corner_radius(source: ThemeSource, hyprland: Option<i32>) -> i32 {
+    match (hyprland, source) {
+        (Some(r), _) => r.max(0),
+        (None, ThemeSource::Omarchy) => 0,
+        (None, _) => 6,
+    }
+}
+
+/// Whether an Omarchy theme is there to use.
+pub fn omarchy_installed(current_dir: &Path) -> bool {
+    current_dir.join("theme/colors.toml").is_file()
 }
 
 pub fn omarchy_current_dir() -> PathBuf {
@@ -222,6 +336,54 @@ mod tests {
         assert_eq!(palette.background, "#121212");
         assert_eq!(palette.raised, "#1e1e1e");
         assert_eq!(palette.foreground, Palette::default().foreground);
+    }
+
+    #[test]
+    fn defaults_to_omarchy_only_where_it_is_installed() {
+        assert_eq!(ThemeChoice::effective(None, true), ThemeChoice::Omarchy);
+        assert_eq!(ThemeChoice::effective(None, false), ThemeChoice::System);
+        assert_eq!(ThemeChoice::effective(Some(ThemeChoice::Omarchy), false), ThemeChoice::System);
+        assert_eq!(ThemeChoice::effective(Some(ThemeChoice::Light), true), ThemeChoice::Light);
+    }
+
+    #[test]
+    fn system_follows_the_desktop_preference() {
+        assert_eq!(resolve(ThemeChoice::System, true), ThemeSource::Dark);
+        assert_eq!(resolve(ThemeChoice::System, false), ThemeSource::Light);
+        assert_eq!(resolve(ThemeChoice::Dark, false), ThemeSource::Dark);
+        assert_eq!(resolve(ThemeChoice::Omarchy, false), ThemeSource::Omarchy);
+    }
+
+    #[test]
+    fn corners_follow_hyprland_then_the_theme() {
+        assert_eq!(corner_radius(ThemeSource::Dark, Some(0)), 0);
+        assert_eq!(corner_radius(ThemeSource::Light, Some(10)), 10);
+        assert_eq!(corner_radius(ThemeSource::Omarchy, None), 0);
+        assert_eq!(corner_radius(ThemeSource::Dark, None), 6);
+    }
+
+    #[test]
+    fn theme_names_round_trip() {
+        for choice in ThemeChoice::ALL {
+            assert_eq!(ThemeChoice::parse(choice.key()), Some(choice));
+        }
+        assert_eq!(ThemeChoice::parse(" Dark "), Some(ThemeChoice::Dark));
+        assert_eq!(ThemeChoice::parse("solarized"), None);
+    }
+
+    #[test]
+    fn built_in_themes_pick_readable_text() {
+        assert_eq!(readable_on(&Palette::light().background), "black");
+        assert_eq!(readable_on(&Palette::dark().background), "white");
+    }
+
+    #[test]
+    fn omarchy_is_installed_when_its_colors_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!omarchy_installed(dir.path()));
+        std::fs::create_dir(dir.path().join("theme")).unwrap();
+        std::fs::write(dir.path().join("theme/colors.toml"), "").unwrap();
+        assert!(omarchy_installed(dir.path()));
     }
 
     #[test]

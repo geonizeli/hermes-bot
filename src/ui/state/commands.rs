@@ -8,6 +8,7 @@ use gpui_kit::Context;
 use serde_json::{Value, json};
 
 use super::{AppEvent, AppState};
+use crate::backend::theme::ThemeChoice;
 use crate::backend::slash::{self, Directive, Local, Route};
 use crate::backend::{botchat, runtime};
 
@@ -92,6 +93,22 @@ impl AppState {
                 }
             }
             Route::Local(Local::Model) => cx.emit(AppEvent::OpenModelPicker),
+            Route::Local(Local::Skin) => {
+                let theme = super::super::theme::theme_state(cx).clone();
+                let names: Vec<&str> = theme.choices().iter().map(|c| c.key()).collect();
+                if arg.is_empty() {
+                    let current = theme.effective();
+                    self.say(&typed, &format!("Theme: {}. Switch with /skin {}.", current.label(), names.join(" | ")));
+                } else {
+                    match ThemeChoice::parse(&arg).filter(|c| theme.choices().contains(c)) {
+                        Some(choice) => {
+                            self.set_theme(choice, cx);
+                            self.say(&typed, &format!("Theme: {}.", choice.label()));
+                        }
+                        None => self.say(&typed, &format!("No theme called \"{arg}\". Pick one of: {}.", names.join(", "))),
+                    }
+                }
+            }
             Route::Local(Local::Reasoning) if slash::EFFORTS.contains(&arg.to_lowercase().as_str()) => {
                 let level = arg.to_lowercase();
                 self.set_effort(&level, cx);

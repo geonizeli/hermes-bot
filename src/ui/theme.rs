@@ -1,12 +1,16 @@
-//! The Omarchy palette and Hyprland rounding as a global, updated live when
-//! the theme changes. The component library's theme follows it, so inputs,
-//! scrollbars and tooltips match the rest of the window.
+//! The window's colours as a global: a built-in dark or light theme (or the
+//! one the desktop prefers), or the live Omarchy theme where it's installed.
+//! Updated live when the choice, the desktop's preference, the Omarchy theme
+//! or Hyprland's rounding changes. The component library's theme follows it,
+//! so inputs, scrollbars and tooltips match the rest of the window.
+
+use std::path::PathBuf;
 
 use gpui_kit::component::{Theme as KitTheme, ThemeMode};
 use gpui_kit::*;
 
 use crate::backend::markdown;
-use crate::backend::theme::{self, Palette};
+use crate::backend::theme::{self, Palette, ThemeChoice, ThemeSource};
 
 #[derive(Clone)]
 pub struct Colors {
@@ -26,7 +30,7 @@ pub struct Colors {
     pub magenta: Hsla,
     pub cyan: Hsla,
     pub orange: Hsla,
-    /// Hyprland's rounding; 0 (sharp) outside Hyprland.
+    /// Hyprland's rounding under Hyprland, otherwise the theme's.
     pub radius: Pixels,
     /// The same palette as strings, for the Markdown renderer.
     pub markdown: markdown::Colors,
@@ -80,7 +84,7 @@ impl Colors {
         }
     }
 
-    /// Whether the background is dark (most Omarchy themes are).
+    /// Whether the background is dark.
     pub fn is_dark(&self) -> bool {
         self.background.l < 0.5
     }
@@ -125,6 +129,13 @@ fn sync_kit(c: &Colors, cx: &mut App) {
         t.secondary_active = tint(c.raised, c.foreground, 0.1);
         t.secondary_foreground = c.foreground;
         t.danger = c.danger;
+        t.danger_foreground = readable_on(c.danger);
+        // The drawn title bar and frame (desktops that leave decorations to
+        // the app).
+        t.title_bar = c.surface;
+        t.title_bar_border = c.border;
+        t.window_border = c.border;
+        t.window_radius = c.radius;
         t.link = c.blue;
         t.colors.list = c.surface;
         t.list_hover = c.raised;
@@ -144,24 +155,110 @@ fn sync_kit(c: &Colors, cx: &mut App) {
     });
 }
 
-fn apply(palette: Palette, radius: Option<i32>, cx: &mut App) {
-    let radius = radius.unwrap_or_else(|| cx.try_global::<Colors>().map(|c| c.radius.as_f32() as i32).unwrap_or(0));
-    let colors = Colors::from_palette(&palette, radius);
+/// What the colours are made from. A global so the theme menu can show the
+/// current choice and whether Omarchy's theme is there to pick.
+#[derive(Clone, Debug)]
+pub struct ThemeState {
+    /// The choice saved in the settings; `None` is the default.
+    pub saved: Option<ThemeChoice>,
+    /// The Omarchy theme's palette, when Omarchy is installed.
+    omarchy: Option<Palette>,
+    /// Hyprland's rounding, when running under Hyprland.
+    hyprland: Option<i32>,
+    /// The desktop prefers dark.
+    system_dark: bool,
+}
+
+impl Global for ThemeState {}
+
+impl ThemeState {
+    pub fn omarchy_available(&self) -> bool {
+        self.omarchy.is_some()
+    }
+
+    /// The choice in effect, with the default worked out.
+    pub fn effective(&self) -> ThemeChoice {
+        ThemeChoice::effective(self.saved, self.omarchy_available())
+    }
+
+    /// The choices worth offering: Omarchy only where it's installed.
+    pub fn choices(&self) -> Vec<ThemeChoice> {
+        ThemeChoice::ALL.into_iter().filter(|c| *c != ThemeChoice::Omarchy || self.omarchy_available()).collect()
+    }
+
+    fn colors(&self) -> Colors {
+        let source = theme::resolve(self.effective(), self.system_dark);
+        let palette = match source {
+            ThemeSource::Omarchy => self.omarchy.clone().unwrap_or_default(),
+            ThemeSource::Dark => Palette::dark(),
+            ThemeSource::Light => Palette::light(),
+        };
+        Colors::from_palette(&palette, theme::corner_radius(source, self.hyprland))
+    }
+}
+
+/// Black or white, whichever reads on `color`.
+fn readable_on(color: Hsla) -> Hsla {
+    let rgb = color.to_rgb();
+    let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    hex(theme::readable_on(&format!("#{:02x}{:02x}{:02x}", byte(rgb.r), byte(rgb.g), byte(rgb.b))))
+}
+
+pub fn theme_state(cx: &App) -> &ThemeState {
+    cx.global::<ThemeState>()
+}
+
+/// Repaints the window from the theme state after any of its inputs changed.
+fn update(cx: &mut App, f: impl FnOnce(&mut ThemeState)) {
+    let mut state = cx.global::<ThemeState>().clone();
+    f(&mut state);
+    let colors = state.colors();
+    cx.set_global(state);
     sync_kit(&colors, cx);
     cx.set_global(colors);
     cx.refresh_windows();
 }
 
+/// Switches to `choice` (`None`: the default). Saving it is the caller's job.
+pub fn set_choice(choice: Option<ThemeChoice>, cx: &mut App) {
+    if cx.try_global::<ThemeState>().is_some_and(|s| s.saved != choice) {
+        update(cx, |s| s.saved = choice);
+    }
+}
+
+/// Follows the desktop's light/dark preference.
+pub fn set_appearance(appearance: WindowAppearance, cx: &mut App) {
+    let dark = is_dark(appearance);
+    if cx.try_global::<ThemeState>().is_some_and(|s| s.system_dark != dark) {
+        update(cx, |s| s.system_dark = dark);
+    }
+}
+
+fn is_dark(appearance: WindowAppearance) -> bool {
+    matches!(appearance, WindowAppearance::Dark | WindowAppearance::VibrantDark)
+}
+
+fn read_omarchy(dir: &PathBuf) -> Option<Palette> {
+    theme::omarchy_installed(dir).then(|| theme::read_palette(dir))
+}
+
 enum Change {
-    Palette(Palette),
+    Omarchy(Option<Palette>),
     Radius(i32),
 }
 
-/// Reads the palette and rounding, and follows them while the app runs.
+/// Sets up the theme with the default choice (the saved one arrives with
+/// the settings) and follows its sources while the app runs.
 pub fn init(cx: &mut App) {
     let dir = theme::omarchy_current_dir();
-    // Corners stay sharp outside Hyprland, like Omarchy's default.
-    apply(theme::read_palette(&dir), Some(theme::hyprland_rounding().unwrap_or(0)), cx);
+    let state = ThemeState {
+        saved: None,
+        omarchy: read_omarchy(&dir),
+        hyprland: theme::hyprland_rounding(),
+        system_dark: is_dark(cx.window_appearance()),
+    };
+    cx.set_global(state);
+    update(cx, |_| {});
     // Test builds read the theme once: the watchers wake the UI from their
     // own threads, which GPUI's test scheduler rejects (see `ui::queue`).
     if cfg!(test) {
@@ -171,8 +268,9 @@ pub fn init(cx: &mut App) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Change>();
     let palette_tx = tx.clone();
     let palette_dir = dir.clone();
+    // Watched even when Omarchy isn't there, so installing it is noticed.
     theme::watch_palette(dir, move || {
-        let _ = palette_tx.send(Change::Palette(theme::read_palette(&palette_dir)));
+        let _ = palette_tx.send(Change::Omarchy(read_omarchy(&palette_dir)));
     });
     theme::watch_hyprland_config(move || {
         if let Some(radius) = theme::hyprland_rounding() {
@@ -182,14 +280,8 @@ pub fn init(cx: &mut App) {
     cx.spawn(async move |cx| {
         while let Some(change) = rx.recv().await {
             cx.update(|cx| match change {
-                Change::Palette(p) => apply(p, None, cx),
-                Change::Radius(r) => {
-                    let mut c = colors(cx).clone();
-                    c.radius = px(r.max(0) as f32);
-                    sync_kit(&c, cx);
-                    cx.set_global(c);
-                    cx.refresh_windows();
-                }
+                Change::Omarchy(palette) => update(cx, |s| s.omarchy = palette),
+                Change::Radius(r) => update(cx, |s| s.hyprland = Some(r)),
             });
         }
     })
