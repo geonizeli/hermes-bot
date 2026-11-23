@@ -165,6 +165,10 @@ pub struct AppState {
 
 impl EventEmitter<AppEvent> for AppState {}
 
+/// Shown while a sign-in is held in memory for want of a keyring.
+const NO_KEYRING: &str = "There's no keyring to save your sign-in, so you'll need to sign in again after quitting. \
+     Install and unlock a Secret Service keyring (GNOME Keyring, KWallet or KeePassXC) to stay signed in.";
+
 /// Text of a transcript message, whichever shape the server used.
 fn message_text(m: &Value) -> String {
     if let Some(text) = m.get("text").and_then(Value::as_str) {
@@ -443,7 +447,11 @@ impl AppState {
                         }));
                         app.gateway = Some(gateway);
                         app.connected = true;
-                        app.error.clear();
+                        app.error = if store::is_in_memory(&server.id) {
+                            NO_KEYRING.to_string()
+                        } else {
+                            String::new()
+                        };
                         app.status = format!("Connected to {}", server.name);
                         app.load_bots(cx);
                     }

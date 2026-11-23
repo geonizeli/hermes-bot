@@ -232,43 +232,99 @@ pub fn paste_clipboard(clipboard: &impl Clipboard, dir: &Path) -> Result<Pasted,
     Ok(Pasted::Text)
 }
 
-/// Opens the desktop's file chooser through the xdg portal.
+/// What to ask the file chooser for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Wanted {
+    /// Any files, several at once.
+    Files,
+    /// One picture.
+    Image,
+}
+
+const IMAGE_MIMES: [&str; 5] = ["image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp"];
+const IMAGE_GLOBS: &str = "*.png *.jpg *.jpeg *.webp *.gif *.bmp";
+
+/// Shown when no file chooser can open at all.
+const NO_CHOOSER: &str = "No file chooser is available. Install xdg-desktop-portal with a backend \
+     (xdg-desktop-portal-gtk, -gnome or -kde), or zenity. You can also drop or paste files into the chat.";
+
+/// Opens the desktop's file chooser: the xdg portal, or zenity or kdialog
+/// where there's no portal. Several files.
 pub async fn pick_files() -> Result<Vec<PathBuf>, String> {
-    use ashpd::desktop::file_chooser::SelectedFiles;
-    let request = SelectedFiles::open_file()
-        .title("Attach files")
-        .modal(true)
-        .multiple(true)
-        .send()
-        .await
-        .map_err(|e| format!("Couldn't open the file chooser: {e}"))?;
-    match request.response() {
-        Ok(files) => Ok(files.uris().iter().filter_map(|u| path_from_url(u.as_str())).collect()),
-        // Cancelled.
-        Err(ashpd::Error::Response(_)) => Ok(Vec::new()),
-        Err(e) => Err(format!("The file chooser failed: {e}")),
+    pick(Wanted::Files, "Attach files").await
+}
+
+/// One picture through the file chooser; `None` when cancelled.
+pub async fn pick_image() -> Result<Option<PathBuf>, String> {
+    Ok(pick(Wanted::Image, "Choose a picture").await?.into_iter().next())
+}
+
+async fn pick(wanted: Wanted, title: &str) -> Result<Vec<PathBuf>, String> {
+    match pick_with_portal(wanted, title).await {
+        Ok(files) => Ok(files),
+        Err(portal_error) => match pick_with_dialog_tool(wanted, title).await {
+            Some(result) => result,
+            None => Err(format!("{NO_CHOOSER} ({portal_error})")),
+        },
     }
 }
 
-/// One picture through the xdg file chooser; `None` when cancelled.
-pub async fn pick_image() -> Result<Option<PathBuf>, String> {
+/// The xdg portal's chooser. Cancelling is an empty pick, not an error.
+async fn pick_with_portal(wanted: Wanted, title: &str) -> Result<Vec<PathBuf>, String> {
     use ashpd::desktop::file_chooser::{FileFilter, SelectedFiles};
-    let images = ["image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp"]
-        .into_iter()
-        .fold(FileFilter::new("Images"), |f, mime| f.mimetype(mime));
-    let request = SelectedFiles::open_file()
-        .title("Choose a picture")
-        .modal(true)
-        .multiple(false)
-        .filter(images)
-        .send()
-        .await
-        .map_err(|e| format!("Couldn't open the file chooser: {e}"))?;
-    match request.response() {
-        Ok(files) => Ok(files.uris().iter().find_map(|u| path_from_url(u.as_str()))),
-        Err(ashpd::Error::Response(_)) => Ok(None),
-        Err(e) => Err(format!("The file chooser failed: {e}")),
+    let mut request = SelectedFiles::open_file().title(title).modal(true).multiple(wanted == Wanted::Files);
+    if wanted == Wanted::Image {
+        request = request.filter(IMAGE_MIMES.into_iter().fold(FileFilter::new("Images"), |f, mime| f.mimetype(mime)));
     }
+    let request = request.send().await.map_err(|e| format!("portal: {e}"))?;
+    match request.response() {
+        Ok(files) => Ok(files.uris().iter().filter_map(|u| path_from_url(u.as_str())).collect()),
+        Err(ashpd::Error::Response(_)) => Ok(Vec::new()),
+        Err(e) => Err(format!("portal: {e}")),
+    }
+}
+
+/// zenity, then kdialog. `None` when neither is installed.
+async fn pick_with_dialog_tool(wanted: Wanted, title: &str) -> Option<Result<Vec<PathBuf>, String>> {
+    for (program, args) in [("zenity", zenity_args(wanted, title)), ("kdialog", kdialog_args(wanted, title))] {
+        let output = match tokio::process::Command::new(program).args(&args).output().await {
+            Ok(output) => output,
+            // Not installed: try the next one.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Some(Err(format!("Couldn't open the file chooser ({program}): {e}"))),
+        };
+        // Both exit 1 when cancelled.
+        return Some(match output.status.code() {
+            Some(0) => Ok(dialog_paths(&String::from_utf8_lossy(&output.stdout))),
+            Some(1) => Ok(Vec::new()),
+            _ => Err(format!("The file chooser ({program}) failed: {}", String::from_utf8_lossy(&output.stderr).trim())),
+        });
+    }
+    None
+}
+
+fn zenity_args(wanted: Wanted, title: &str) -> Vec<String> {
+    let mut args = vec!["--file-selection".to_string(), format!("--title={title}")];
+    match wanted {
+        Wanted::Files => args.extend(["--multiple".to_string(), "--separator=\n".to_string()]),
+        Wanted::Image => args.push(format!("--file-filter=Images | {IMAGE_GLOBS}")),
+    }
+    args
+}
+
+fn kdialog_args(wanted: Wanted, title: &str) -> Vec<String> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+    let mut args = vec!["--title".to_string(), title.to_string(), "--getopenfilename".to_string(), home];
+    match wanted {
+        Wanted::Files => args.extend(["--multiple".to_string(), "--separate-output".to_string()]),
+        Wanted::Image => args.push(format!("Images ({IMAGE_GLOBS})")),
+    }
+    args
+}
+
+/// The chosen paths, one per line.
+fn dialog_paths(stdout: &str) -> Vec<PathBuf> {
+    stdout.lines().map(str::trim).filter(|l| !l.is_empty()).map(PathBuf::from).collect()
 }
 
 #[cfg(test)]
@@ -281,6 +337,23 @@ mod tests {
         assert_eq!(image_extension(&[0xff, 0xd8, 0xff, 0xe0]), Some("jpg"));
         assert_eq!(image_extension(b"RIFF\0\0\0\0WEBPVP8 "), Some("webp"));
         assert_eq!(image_extension(b"hello"), None);
+    }
+
+    #[test]
+    fn reads_dialog_tool_picks() {
+        assert_eq!(dialog_paths("/tmp/a b.png\n/home/me/x.txt\n\n"), vec![PathBuf::from("/tmp/a b.png"), PathBuf::from("/home/me/x.txt")]);
+        assert!(dialog_paths("").is_empty());
+    }
+
+    #[test]
+    fn asks_dialog_tools_for_the_right_files() {
+        let zenity = zenity_args(Wanted::Files, "Attach files");
+        assert!(zenity.contains(&"--multiple".to_string()) && zenity.contains(&"--separator=\n".to_string()));
+        assert!(zenity_args(Wanted::Image, "Pick").iter().any(|a| a.starts_with("--file-filter=Images | *.png")));
+        let kdialog = kdialog_args(Wanted::Image, "Pick");
+        assert_eq!(kdialog[..3], ["--title".to_string(), "Pick".to_string(), "--getopenfilename".to_string()]);
+        assert!(kdialog.last().unwrap().starts_with("Images (*.png"));
+        assert!(!kdialog.contains(&"--multiple".to_string()));
     }
 
     #[test]
