@@ -1,24 +1,23 @@
 //! Bot answers as display blocks: Markdown parsed in Rust (pulldown-cmark),
-//! code highlighted (syntect), and the rest turned into the HTML subset Qt's
-//! rich text understands, styled with the Omarchy theme colours.
+//! code highlighted (syntect), and prose turned into paragraphs of styled
+//! spans, coloured with the Omarchy theme.
 //!
-//! Each block is drawn by its own QML item: text and tables as rich text,
-//! code with a header and a copy button, images fetched from the server,
-//! GitHub-style alerts with a coloured edge.
+//! The UI draws each block on its own: paragraphs as styled text, code with a
+//! header and a copy button, tables as a grid, images fetched from the
+//! server, GitHub-style alerts with a coloured edge.
 
 use std::collections::HashMap;
+use std::ops::Range;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use pulldown_cmark::{BlockQuoteKind, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
-use serde::Deserialize;
-use serde_json::{Value, json};
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{Color, FontStyle, ScopeSelectors, StyleModifier, Theme, ThemeItem, ThemeSettings};
 use syntect::parsing::SyntaxSet;
 
-#[derive(Deserialize, Clone, Debug)]
-#[serde(default)]
+/// The palette answers are drawn with, as `#rrggbb` strings.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Colors {
     pub foreground: String,
     pub muted: String,
@@ -51,6 +50,60 @@ impl Default for Colors {
             orange: "#f0883e".into(),
         }
     }
+}
+
+/// How a run of text looks.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Span {
+    /// Byte range in the paragraph's text.
+    pub range: Range<usize>,
+    /// `#rrggbb`.
+    pub color: String,
+    pub bold: bool,
+    pub italic: bool,
+    pub strike: bool,
+    /// Inline code: drawn on the surface colour.
+    pub code: bool,
+    pub link: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ParaKind {
+    #[default]
+    Normal,
+    /// 1 to 4 (deeper levels draw like 4).
+    Heading(u8),
+    Quote,
+}
+
+/// One paragraph (or list item, heading, quote line) of styled text.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Para {
+    pub text: String,
+    pub spans: Vec<Span>,
+    pub kind: ParaKind,
+    /// List nesting depth.
+    pub indent: u8,
+    /// A list marker ("•", "3.") drawn before the text in the accent colour.
+    pub marker: Option<String>,
+}
+
+impl Para {
+    pub fn is_empty(&self) -> bool {
+        self.text.trim().is_empty()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Block {
+    Text(Vec<Para>),
+    Code { lang: String, raw: String, spans: Vec<Span> },
+    /// Rows of cells; the first row is the header.
+    Table { rows: Vec<Vec<Para>> },
+    /// `path` is a server-side file, `url` anything else.
+    Image { path: String, url: String, alt: String },
+    Alert { kind: String, paras: Vec<Para> },
+    Rule,
 }
 
 fn syntaxes() -> &'static SyntaxSet {
@@ -100,66 +153,42 @@ fn code_theme(c: &Colors) -> Arc<Theme> {
         .clone()
 }
 
-pub fn escape(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            _ => out.push(c),
-        }
-    }
-    out
-}
-
-/// Code as HTML spans, one colour per token; plain escaped text when the
+/// Code as coloured token spans over `code`; one plain span when the
 /// language is unknown.
-pub fn highlight(code: &str, lang: &str, colors: &Colors) -> String {
+pub fn highlight(code: &str, lang: &str, colors: &Colors) -> Vec<Span> {
+    let plain = || vec![Span { range: 0..code.len(), color: colors.foreground.clone(), ..Default::default() }];
     let set = syntaxes();
     let token = lang.split(|c: char| c.is_whitespace() || c == ',').next().unwrap_or_default();
     let syntax = (!token.is_empty())
         .then(|| set.find_syntax_by_token(token).or_else(|| set.find_syntax_by_extension(token)))
         .flatten();
-    let Some(syntax) = syntax else {
-        return escape(code).replace('\n', "<br>");
-    };
+    let Some(syntax) = syntax else { return plain() };
     let theme = code_theme(colors);
     let mut highlighter = HighlightLines::new(syntax, &theme);
-    let mut out = String::new();
+    let mut spans = Vec::new();
+    let mut offset = 0;
     for line in syntect::util::LinesWithEndings::from(code) {
-        let Ok(ranges) = highlighter.highlight_line(line, set) else {
-            out.push_str(&escape(line));
-            continue;
-        };
-        for (style, piece) in ranges {
-            let c = style.foreground;
-            let piece = piece.trim_end_matches('\n');
-            if piece.is_empty() {
-                continue;
+        match highlighter.highlight_line(line, set) {
+            Ok(ranges) => {
+                for (style, piece) in ranges {
+                    let c = style.foreground;
+                    spans.push(Span {
+                        range: offset..offset + piece.len(),
+                        color: format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b),
+                        bold: style.font_style.contains(FontStyle::BOLD),
+                        italic: style.font_style.contains(FontStyle::ITALIC),
+                        ..Default::default()
+                    });
+                    offset += piece.len();
+                }
             }
-            let (open, close) = match (
-                style.font_style.contains(FontStyle::ITALIC),
-                style.font_style.contains(FontStyle::BOLD),
-            ) {
-                (true, _) => ("<i>", "</i>"),
-                (_, true) => ("<b>", "</b>"),
-                _ => ("", ""),
-            };
-            out.push_str(&format!(
-                "<span style=\"color:#{:02x}{:02x}{:02x}\">{open}{}{close}</span>",
-                c.r,
-                c.g,
-                c.b,
-                escape(piece).replace(' ', "&nbsp;")
-            ));
-        }
-        if line.ends_with('\n') {
-            out.push_str("<br>");
+            Err(_) => {
+                spans.push(Span { range: offset..offset + line.len(), color: colors.foreground.clone(), ..Default::default() });
+                offset += line.len();
+            }
         }
     }
-    out.trim_end_matches("<br>").to_string()
+    spans
 }
 
 fn is_image_path(path: &str) -> bool {
@@ -190,49 +219,109 @@ fn expand_media_tags(text: &str) -> String {
         .join("\n")
 }
 
+/// Where paragraphs are being collected.
+#[derive(PartialEq)]
+enum Sink {
+    Text,
+    Alert,
+    Table,
+}
+
 struct Builder<'c> {
     colors: &'c Colors,
-    blocks: Vec<Value>,
-    html: String,
-    // Container stack so a flush can reopen what's still open (lists, quotes).
-    in_table: bool,
-    table: String,
+    blocks: Vec<Block>,
+    /// Paragraphs of the text block being built.
+    paras: Vec<Para>,
+    alert: Option<(String, Vec<Para>)>,
+    table: Option<Vec<Vec<Para>>>,
     in_code: Option<String>,
     code: String,
-    alert: Option<(String, String)>,
     image: Option<(String, String)>,
     list_stack: Vec<Option<u64>>,
-    // The colour text is drawn in, innermost last. Text is always wrapped in
-    // its colour so list markers can take the accent without their items.
+    quote_depth: u32,
+    /// The colour text is drawn in, innermost last.
     ink: Vec<String>,
+    bold: u32,
+    italic: u32,
+    strike: u32,
+    links: Vec<String>,
+    /// The paragraph just opened by a list item, which its first paragraph reuses.
+    fresh_item: bool,
 }
 
 impl Builder<'_> {
-    fn text(&mut self, text: &str) {
-        let html = escape(text);
-        match self.ink.last() {
-            Some(color) => {
-                let span = format!("<span style=\"color:{color}\">{html}</span>");
-                self.push(&span)
-            }
-            None => self.push(&html),
+    fn sink(&self) -> Sink {
+        if self.table.is_some() {
+            Sink::Table
+        } else if self.alert.is_some() {
+            Sink::Alert
+        } else {
+            Sink::Text
         }
     }
 
-    fn push(&mut self, s: &str) {
-        if let Some((_, html)) = self.alert.as_mut() {
-            html.push_str(s);
-        } else if self.in_table {
-            self.table.push_str(s);
-        } else {
-            self.html.push_str(s);
+    fn paras_mut(&mut self) -> &mut Vec<Para> {
+        match self.sink() {
+            Sink::Table => self
+                .table
+                .as_mut()
+                .and_then(|rows| rows.last_mut())
+                .expect("a table row is open"),
+            Sink::Alert => &mut self.alert.as_mut().expect("an alert is open").1,
+            Sink::Text => &mut self.paras,
         }
+    }
+
+    fn new_para(&mut self, para: Para) {
+        self.fresh_item = false;
+        self.paras_mut().push(para);
+    }
+
+    fn current(&mut self) -> &mut Para {
+        if self.paras_mut().is_empty() {
+            let kind = if self.quote_depth > 0 { ParaKind::Quote } else { ParaKind::Normal };
+            let indent = self.list_stack.len() as u8;
+            self.paras_mut().push(Para { kind, indent, ..Default::default() });
+        }
+        self.paras_mut().last_mut().expect("a paragraph")
+    }
+
+    fn style(&self, code: bool) -> Span {
+        Span {
+            range: 0..0,
+            color: if code { self.colors.green.clone() } else { self.ink.last().cloned().unwrap_or_default() },
+            bold: self.bold > 0,
+            italic: self.italic > 0 || self.quote_depth > 0,
+            strike: self.strike > 0,
+            code,
+            link: self.links.last().cloned(),
+        }
+    }
+
+    fn text(&mut self, text: &str, code: bool) {
+        if text.is_empty() {
+            return;
+        }
+        let mut span = self.style(code);
+        let para = self.current();
+        let start = para.text.len();
+        para.text.push_str(text);
+        span.range = start..para.text.len();
+        // Runs with the same look merge, so a paragraph stays a few spans.
+        if let Some(last) = para.spans.last_mut() {
+            let same_look = Span { range: last.range.clone(), ..span.clone() } == *last;
+            if last.range.end == start && same_look {
+                last.range.end = span.range.end;
+                return;
+            }
+        }
+        para.spans.push(span);
     }
 
     fn flush_text(&mut self) {
-        let html = std::mem::take(&mut self.html);
-        if !html.trim().is_empty() {
-            self.blocks.push(json!({ "type": "text", "html": html }));
+        let paras: Vec<Para> = std::mem::take(&mut self.paras).into_iter().filter(|p| !p.is_empty()).collect();
+        if !paras.is_empty() {
+            self.blocks.push(Block::Text(paras));
         }
     }
 
@@ -240,16 +329,24 @@ impl Builder<'_> {
         let c = self.colors.clone();
         match event {
             Event::Start(tag) => match tag {
-                Tag::Paragraph => self.push("<p>"),
+                Tag::Paragraph => {
+                    if !self.fresh_item {
+                        let kind = if self.quote_depth > 0 { ParaKind::Quote } else { ParaKind::Normal };
+                        let indent = self.list_stack.len() as u8;
+                        self.new_para(Para { kind, indent, ..Default::default() });
+                    }
+                    self.fresh_item = false;
+                }
                 Tag::Heading { level, .. } => {
-                    let (size, color) = match level {
-                        HeadingLevel::H1 => (22, &c.accent),
-                        HeadingLevel::H2 => (19, &c.blue),
-                        HeadingLevel::H3 => (17, &c.magenta),
-                        _ => (15, &c.cyan),
+                    let (n, color) = match level {
+                        HeadingLevel::H1 => (1, &c.accent),
+                        HeadingLevel::H2 => (2, &c.blue),
+                        HeadingLevel::H3 => (3, &c.magenta),
+                        _ => (4, &c.cyan),
                     };
                     self.ink.push(color.clone());
-                    self.push(&format!("<p style=\"font-size:{size}px; font-weight:600; margin-top:10px\">"));
+                    self.bold += 1;
+                    self.new_para(Para { kind: ParaKind::Heading(n), ..Default::default() });
                 }
                 Tag::BlockQuote(Some(kind)) => {
                     self.flush_text();
@@ -260,14 +357,11 @@ impl Builder<'_> {
                         BlockQuoteKind::Warning => "warning",
                         BlockQuoteKind::Caution => "caution",
                     };
-                    self.alert = Some((name.into(), String::new()));
+                    self.alert = Some((name.into(), Vec::new()));
                 }
                 Tag::BlockQuote(None) => {
                     self.ink.push(c.muted.clone());
-                    self.push(&format!(
-                        "<table cellspacing=\"0\" cellpadding=\"0\" style=\"margin-top:4px; margin-bottom:4px\"><tr><td width=\"3\" style=\"background-color:{}\"></td><td style=\"padding-left:12px\"><i>",
-                        c.magenta
-                    ));
+                    self.quote_depth += 1;
                 }
                 Tag::CodeBlock(kind) => {
                     self.flush_text();
@@ -277,106 +371,116 @@ impl Builder<'_> {
                     });
                     self.code.clear();
                 }
-                Tag::List(start) => {
-                    self.list_stack.push(start);
-                    match start {
-                        Some(n) => self.push(&format!("<ol start=\"{n}\">")),
-                        None => self.push("<ul>"),
-                    }
+                Tag::List(start) => self.list_stack.push(start),
+                Tag::Item => {
+                    let depth = self.list_stack.len();
+                    let marker = match self.list_stack.last_mut() {
+                        Some(Some(n)) => {
+                            let marker = format!("{n}.");
+                            *n += 1;
+                            marker
+                        }
+                        _ => if depth > 1 { "◦" } else { "•" }.to_string(),
+                    };
+                    let kind = if self.quote_depth > 0 { ParaKind::Quote } else { ParaKind::Normal };
+                    self.new_para(Para { kind, indent: depth.saturating_sub(1) as u8, marker: Some(marker), ..Default::default() });
+                    self.fresh_item = true;
                 }
-                Tag::Item => self.push(&format!("<li style=\"color:{}\">", c.accent)),
                 Tag::Table(_) => {
                     self.flush_text();
-                    self.in_table = true;
-                    self.table = format!(
-                        "<table border=\"1\" cellspacing=\"0\" cellpadding=\"6\" style=\"border-color:{}; border-style:solid\">",
-                        c.border
-                    );
+                    self.table = Some(Vec::new());
                 }
                 Tag::TableHead => {
                     self.ink.push(c.accent.clone());
-                    self.push(&format!("<tr style=\"background-color:{}; font-weight:600\">", c.surface))
+                    self.bold += 1;
+                    if let Some(rows) = self.table.as_mut() {
+                        rows.push(Vec::new());
+                    }
                 }
-                Tag::TableRow => self.push("<tr>"),
-                Tag::TableCell => self.push("<td>"),
-                Tag::Emphasis => self.push("<i>"),
+                Tag::TableRow => {
+                    if let Some(rows) = self.table.as_mut() {
+                        rows.push(Vec::new());
+                    }
+                }
+                Tag::TableCell => {
+                    if let Some(row) = self.table.as_mut().and_then(|rows| rows.last_mut()) {
+                        row.push(Para::default());
+                    }
+                }
+                Tag::Emphasis => self.italic += 1,
                 Tag::Strong => {
                     self.ink.push(c.accent.clone());
-                    self.push("<b>")
+                    self.bold += 1;
                 }
-                Tag::Strikethrough => self.push("<s>"),
+                Tag::Strikethrough => self.strike += 1,
                 Tag::Link { dest_url, .. } => {
                     self.ink.push(c.blue.clone());
-                    self.push(&format!("<a href=\"{}\" style=\"color:{}\">", escape(&dest_url), c.blue));
+                    self.links.push(dest_url.to_string());
                 }
                 Tag::Image { dest_url, .. } => self.image = Some((dest_url.to_string(), String::new())),
                 _ => {}
             },
             Event::End(tag) => match tag {
-                TagEnd::Paragraph => self.push("</p>"),
+                TagEnd::Paragraph => {}
                 TagEnd::Heading(_) => {
                     self.ink.pop();
-                    self.push("</p>")
+                    self.bold = self.bold.saturating_sub(1);
+                    self.new_para(Para::default());
                 }
                 TagEnd::BlockQuote(Some(_)) => {
-                    if let Some((kind, html)) = self.alert.take() {
-                        self.blocks.push(json!({ "type": "alert", "kind": kind, "html": html }));
+                    if let Some((kind, paras)) = self.alert.take() {
+                        let paras = paras.into_iter().filter(|p| !p.is_empty()).collect();
+                        self.blocks.push(Block::Alert { kind, paras });
                     }
                 }
                 TagEnd::BlockQuote(None) => {
                     self.ink.pop();
-                    self.push("</i></td></tr></table>")
+                    self.quote_depth = self.quote_depth.saturating_sub(1);
                 }
                 TagEnd::CodeBlock => {
                     let lang = self.in_code.take().unwrap_or_default();
                     let raw = std::mem::take(&mut self.code);
                     let raw = raw.strip_suffix('\n').unwrap_or(&raw).to_string();
-                    self.blocks.push(json!({
-                        "type": "code",
-                        "lang": lang,
-                        "html": highlight(&raw, &lang, self.colors),
-                        "raw": raw,
-                    }));
+                    let spans = highlight(&raw, &lang, self.colors);
+                    self.blocks.push(Block::Code { lang, raw, spans });
                 }
                 TagEnd::List(_) => {
-                    match self.list_stack.pop().flatten() {
-                        Some(_) => self.push("</ol>"),
-                        None => self.push("</ul>"),
-                    }
+                    self.list_stack.pop();
                 }
-                TagEnd::Item => self.push("</li>"),
+                TagEnd::Item => self.fresh_item = false,
                 TagEnd::Table => {
-                    self.in_table = false;
-                    let mut html = std::mem::take(&mut self.table);
-                    html.push_str("</table>");
-                    self.blocks.push(json!({ "type": "table", "html": html }));
+                    if let Some(rows) = self.table.take() {
+                        let rows: Vec<Vec<Para>> = rows.into_iter().filter(|r| !r.is_empty()).collect();
+                        self.blocks.push(Block::Table { rows });
+                    }
                 }
                 TagEnd::TableHead => {
                     self.ink.pop();
-                    self.push("</tr>")
+                    self.bold = self.bold.saturating_sub(1);
                 }
-                TagEnd::TableRow => self.push("</tr>"),
-                TagEnd::TableCell => self.push("</td>"),
-                TagEnd::Emphasis => self.push("</i>"),
+                TagEnd::TableRow | TagEnd::TableCell => {}
+                TagEnd::Emphasis => self.italic = self.italic.saturating_sub(1),
                 TagEnd::Strong => {
                     self.ink.pop();
-                    self.push("</b>")
+                    self.bold = self.bold.saturating_sub(1);
                 }
-                TagEnd::Strikethrough => self.push("</s>"),
+                TagEnd::Strikethrough => self.strike = self.strike.saturating_sub(1),
                 TagEnd::Link => {
                     self.ink.pop();
-                    self.push("</a>")
+                    self.links.pop();
                 }
                 TagEnd::Image => {
                     if let Some((dest, alt)) = self.image.take() {
                         // Images stand on their own line.
-                        self.flush_text();
+                        if self.sink() == Sink::Text {
+                            self.flush_text();
+                        }
                         let (path, url) = match dest.strip_prefix("hermes-media:") {
                             Some(p) => (p.to_string(), String::new()),
                             None if dest.starts_with('/') => (dest.clone(), String::new()),
                             None => (String::new(), dest.clone()),
                         };
-                        self.blocks.push(json!({ "type": "image", "path": path, "url": url, "alt": alt }));
+                        self.blocks.push(Block::Image { path, url, alt });
                     }
                 }
                 _ => {}
@@ -387,42 +491,37 @@ impl Builder<'_> {
                 } else if let Some((_, alt)) = self.image.as_mut() {
                     alt.push_str(&text);
                 } else {
-                    self.text(&text);
+                    self.text(&text, false);
                 }
             }
-            Event::Code(code) => self.push(&format!(
-                "<code style=\"background-color:{}; color:{}; font-family:monospace\">&nbsp;{}&nbsp;</code>",
-                c.surface,
-                c.green,
-                escape(&code)
-            )),
-            Event::InlineMath(math) | Event::DisplayMath(math) => {
-                self.push(&format!("<code style=\"font-family:monospace\">{}</code>", escape(&math)))
-            }
-            Event::Html(html) | Event::InlineHtml(html) => self.push(&escape(&html)),
+            Event::Code(code) => self.text(&format!("\u{a0}{code}\u{a0}"), true),
+            Event::InlineMath(math) | Event::DisplayMath(math) => self.text(&math, true),
+            Event::Html(html) | Event::InlineHtml(html) => self.text(&html, false),
             // Bot answers use single newlines as line breaks.
             Event::SoftBreak | Event::HardBreak => {
                 if self.in_code.is_some() {
                     self.code.push('\n');
                 } else {
-                    self.push("<br>");
+                    self.text("\n", false);
                 }
             }
             Event::Rule => {
                 self.flush_text();
-                self.blocks.push(json!({ "type": "rule" }));
+                self.blocks.push(Block::Rule);
             }
             Event::TaskListMarker(done) => {
-                let (mark, color) = if done { ("☑", &c.green) } else { ("☐", &c.muted) };
-                self.push(&format!("<span style=\"color:{color}\">{mark}</span> "))
+                let (mark, color) = if done { ("☑ ", c.green.clone()) } else { ("☐ ", c.muted.clone()) };
+                self.ink.push(color);
+                self.text(mark, false);
+                self.ink.pop();
             }
-            Event::FootnoteReference(name) => self.push(&format!("<sup>{}</sup>", escape(&name))),
+            Event::FootnoteReference(name) => self.text(&format!("[{name}]"), false),
         }
     }
 }
 
-/// The blocks of one answer, as JSON for QML.
-pub fn render(text: &str, colors: &Colors) -> Value {
+/// The blocks of one answer.
+pub fn render(text: &str, colors: &Colors) -> Vec<Block> {
     let text = expand_media_tags(text);
     let options = Options::ENABLE_TABLES
         | Options::ENABLE_STRIKETHROUGH
@@ -432,15 +531,20 @@ pub fn render(text: &str, colors: &Colors) -> Value {
     let mut builder = Builder {
         colors,
         blocks: Vec::new(),
-        html: String::new(),
-        in_table: false,
-        table: String::new(),
+        paras: Vec::new(),
+        alert: None,
+        table: None,
         in_code: None,
         code: String::new(),
-        alert: None,
         image: None,
         list_stack: Vec::new(),
+        quote_depth: 0,
         ink: vec![colors.foreground.clone()],
+        bold: 0,
+        italic: 0,
+        strike: 0,
+        links: Vec::new(),
+        fresh_item: false,
     };
     for event in Parser::new_ext(&text, options) {
         builder.event(event);
@@ -448,65 +552,122 @@ pub fn render(text: &str, colors: &Colors) -> Value {
     // A code block still streaming in has no closing fence yet.
     if let Some(lang) = builder.in_code.take() {
         let raw = std::mem::take(&mut builder.code);
-        builder.blocks.push(json!({ "type": "code", "lang": lang, "html": highlight(&raw, &lang, colors), "raw": raw }));
+        let spans = highlight(&raw, &lang, colors);
+        builder.blocks.push(Block::Code { lang, raw, spans });
     }
     builder.flush_text();
-    Value::Array(builder.blocks)
+    builder.blocks
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn kinds(v: &Value) -> Vec<String> {
-        v.as_array().unwrap().iter().map(|b| b["type"].as_str().unwrap().to_string()).collect()
+    fn kinds(blocks: &[Block]) -> Vec<&'static str> {
+        blocks
+            .iter()
+            .map(|b| match b {
+                Block::Text(_) => "text",
+                Block::Code { .. } => "code",
+                Block::Table { .. } => "table",
+                Block::Image { .. } => "image",
+                Block::Alert { .. } => "alert",
+                Block::Rule => "rule",
+            })
+            .collect()
+    }
+
+    fn span_text<'a>(para: &'a Para, span: &Span) -> &'a str {
+        &para.text[span.range.clone()]
     }
 
     #[test]
     fn splits_text_code_and_tables() {
         let md = "Hello **world**\n\n```rust\nfn main() {}\n```\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\nbye";
-        let blocks = render(md, &Colors::default());
+        let colors = Colors::default();
+        let blocks = render(md, &colors);
         assert_eq!(kinds(&blocks), vec!["text", "code", "table", "text"]);
-        assert!(blocks[0]["html"].as_str().unwrap().contains("world</span></b>"));
-        assert_eq!(blocks[1]["lang"], "rust");
-        assert_eq!(blocks[1]["raw"], "fn main() {}");
-        assert!(blocks[1]["html"].as_str().unwrap().contains("<span style=\"color:#"));
-        assert!(blocks[2]["html"].as_str().unwrap().contains("1</span></td>"));
+        let Block::Text(paras) = &blocks[0] else { panic!() };
+        assert_eq!(paras[0].text, "Hello world");
+        let strong = paras[0].spans.iter().find(|s| s.bold).unwrap();
+        assert_eq!(span_text(&paras[0], strong), "world");
+        assert_eq!(strong.color, colors.accent);
+        let Block::Code { lang, raw, spans } = &blocks[1] else { panic!() };
+        assert_eq!(lang, "rust");
+        assert_eq!(raw, "fn main() {}");
+        assert!(spans.len() > 1);
+        assert_eq!(spans.last().unwrap().range.end, raw.len());
+        let Block::Table { rows } = &blocks[2] else { panic!() };
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1][0].text, "1");
+        assert!(rows[0][0].spans[0].bold);
     }
 
     #[test]
     fn colours_code_and_text_from_the_palette() {
         let colors = Colors { magenta: "#aa00aa".into(), blue: "#0000ee".into(), ..Colors::default() };
         let code = highlight("fn main() {}", "rust", &colors);
-        assert!(code.contains("color:#aa00aa"), "{code}");
+        assert!(code.iter().any(|s| s.color == "#aa00aa"), "{code:?}");
         let blocks = render("## Title\n\n- item with [a link](https://e.com)", &colors);
-        let html = blocks.to_string();
-        assert!(html.contains("color:#0000ee"));
-        assert!(html.contains(&format!("<li style=\\\"color:{}\\\">", colors.accent)), "{html}");
+        let Block::Text(paras) = &blocks[0] else { panic!() };
+        assert_eq!(paras[0].kind, ParaKind::Heading(2));
+        assert_eq!(paras[0].spans[0].color, "#0000ee");
+        let item = &paras[1];
+        assert_eq!(item.marker.as_deref(), Some("•"));
+        let link = item.spans.iter().find(|s| s.link.is_some()).unwrap();
+        assert_eq!(link.link.as_deref(), Some("https://e.com"));
+        assert_eq!(span_text(item, link), "a link");
+    }
+
+    #[test]
+    fn numbers_and_nests_lists() {
+        let blocks = render("3. three\n4. four\n   - inner", &Colors::default());
+        let Block::Text(paras) = &blocks[0] else { panic!() };
+        let markers: Vec<_> = paras.iter().map(|p| (p.marker.clone().unwrap_or_default(), p.indent)).collect();
+        assert_eq!(markers, vec![("3.".into(), 0), ("4.".into(), 0), ("◦".into(), 1)]);
     }
 
     #[test]
     fn turns_media_tags_and_images_into_image_blocks() {
         let blocks = render("Here:\nMEDIA:/home/h/.hermes/images/cat.png\n\n![x](https://e.com/a.png)", &Colors::default());
-        let images: Vec<_> = blocks.as_array().unwrap().iter().filter(|b| b["type"] == "image").collect();
+        let images: Vec<_> = blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::Image { path, url, .. } => Some((path.clone(), url.clone())),
+                _ => None,
+            })
+            .collect();
         assert_eq!(images.len(), 2);
-        assert_eq!(images[0]["path"], "/home/h/.hermes/images/cat.png");
-        assert_eq!(images[1]["url"], "https://e.com/a.png");
+        assert_eq!(images[0].0, "/home/h/.hermes/images/cat.png");
+        assert_eq!(images[1].1, "https://e.com/a.png");
     }
 
     #[test]
-    fn renders_alerts_and_escapes_html() {
+    fn renders_alerts_and_keeps_html_as_text() {
         let blocks = render("> [!WARNING]\n> careful <b>\n\n<script>", &Colors::default());
-        assert_eq!(blocks[0]["type"], "alert");
-        assert_eq!(blocks[0]["kind"], "warning");
-        let all = blocks.to_string();
-        assert!(!all.contains("<script>"));
+        let Block::Alert { kind, paras } = &blocks[0] else { panic!("{blocks:?}") };
+        assert_eq!(kind, "warning");
+        assert!(paras[0].text.contains("careful"));
+        let Block::Text(rest) = &blocks[1] else { panic!() };
+        assert_eq!(rest[0].text.trim(), "<script>");
     }
 
     #[test]
     fn keeps_an_unfinished_code_block_while_streaming() {
         let blocks = render("Look:\n```py\nprint(1)", &Colors::default());
         assert_eq!(kinds(&blocks), vec!["text", "code"]);
-        assert_eq!(blocks[1]["raw"], "print(1)");
+        let Block::Code { raw, .. } = &blocks[1] else { panic!() };
+        assert_eq!(raw, "print(1)");
+    }
+
+    #[test]
+    fn styles_inline_code_and_quotes() {
+        let colors = Colors::default();
+        let blocks = render("use `cargo`\n\n> quoted", &colors);
+        let Block::Text(paras) = &blocks[0] else { panic!() };
+        let code = paras[0].spans.iter().find(|s| s.code).unwrap();
+        assert_eq!(code.color, colors.green);
+        assert_eq!(paras[1].kind, ParaKind::Quote);
+        assert!(paras[1].spans[0].italic);
     }
 }

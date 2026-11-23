@@ -1,31 +1,32 @@
 //! hermes-bot: chat with Hermes bots on remote Hermes servers.
 
-mod bridge;
 mod backend;
+mod ui;
 
-use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QString, QUrl};
+use gpui_kit::*;
 
 fn main() {
-    let mut app = QGuiApplication::new();
-    if let Some(mut app) = app.as_mut() {
-        app.as_mut().set_application_name(&QString::from("hermes-bot"));
-        app.as_mut().set_application_version(&QString::from(env!("CARGO_PKG_VERSION")));
-        // QSettings (QML Settings) keeps UI state in ~/.config/hermes-bot/.
-        app.as_mut().set_organization_name(&QString::from("hermes-bot"));
-    }
-    // Matches the window to hermes-bot.desktop, so Hyprland (Wayland app_id)
-    // and the launcher pick up the installed icon.
-    QGuiApplication::set_desktop_file_name(&QString::from("hermes-bot"));
-
-    let mut engine = QQmlApplicationEngine::new();
-    if let Some(engine) = engine.as_mut() {
-        engine.load(&QUrl::from("qrc:/qt/qml/HermesBot/qml/Main.qml"));
-    }
-
-    let code = app.as_mut().map(|app| app.exec()).unwrap_or(1);
-    // Tear the QML scene down before exiting so objects can clean up (the
-    // screen viewer hands back control of a bot's screen).
-    drop(engine);
-    drop(app);
-    std::process::exit(code);
+    gpui_kit::application().run(|cx| {
+        gpui_kit::init(cx);
+        ui::theme::init(cx);
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::centered(None, size(px(1200.), px(820.)), cx)),
+            window_min_size: Some(size(px(720.), px(480.))),
+            titlebar: Some(TitlebarOptions { title: Some("Hermes Bot".into()), ..Default::default() }),
+            // Matches the window to hermes-bot.desktop, so Hyprland (Wayland
+            // app_id) and the launcher pick up the installed icon.
+            app_id: Some("hermes-bot".into()),
+            ..Default::default()
+        };
+        if let Err(e) = gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| ui::root::RootView::new(window, cx))) {
+            eprintln!("hermes-bot: couldn't open the window: {e}");
+            cx.quit();
+        }
+        cx.on_window_closed(|cx, _| {
+            if cx.windows().is_empty() {
+                cx.quit();
+            }
+        })
+        .detach();
+    });
 }

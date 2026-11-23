@@ -28,6 +28,33 @@ pub struct Config {
     /// Last bot (Hermes profile) used, per server id.
     #[serde(default)]
     pub last_bot: HashMap<String, String>,
+    /// Window state remembered between runs.
+    #[serde(default)]
+    pub ui: UiPrefs,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct UiPrefs {
+    /// The chat's side panel is open.
+    #[serde(default = "yes")]
+    pub side_panel_open: bool,
+    /// "jobs" or "screen".
+    #[serde(default = "jobs_tab")]
+    pub side_panel_tab: String,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn jobs_tab() -> String {
+    "jobs".into()
+}
+
+impl Default for UiPrefs {
+    fn default() -> Self {
+        UiPrefs { side_panel_open: true, side_panel_tab: jobs_tab() }
+    }
 }
 
 impl Config {

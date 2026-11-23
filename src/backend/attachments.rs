@@ -195,7 +195,7 @@ pub enum Pasted {
     Nothing,
 }
 
-/// What the clipboard offers, read by the caller (the bridge, through Qt).
+/// What the clipboard offers, read by the caller (the UI, from a paste).
 pub trait Clipboard {
     fn formats(&self) -> Vec<String>;
     fn data(&self, format: &str) -> Vec<u8>;

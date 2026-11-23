@@ -6,11 +6,10 @@ edition = "2024"
 [dependencies]
 ashpd = { version = "0.14.1", default-features = false, features = ["tokio", "file_chooser"] }
 base64 = "0.23.1"
-cxx = "1.0.205"
-cxx-qt = "0.10.0"
-cxx-qt-lib = { version = "0.10.0", features = ["qt_gui", "qt_qml", "qt_quickcontrols"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 flate2 = "1.1.11"
 futures-util = "0.3.34"
+gpui-kit = "0.11.0"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 keyring = "4.2.0"
 notify = "8.2.2"
@@ -29,9 +28,6 @@ toml = "1.2.1"
 unicode-normalization = { version = "0.1.26", default-features = false }
 url = "2.5.8"
 uuid = { version = "1.29.3", features = ["v4"] }
-
-[build-dependencies]
-cxx-qt-build = "0.10.0"
 
 [dev-dependencies]
 tempfile = "3.27.0"

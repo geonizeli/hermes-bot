@@ -1,6 +1,6 @@
 //! Bot faces as the official Hermes desktop draws them: the classic shapes
 //! with eyes, the blobatar faces, and the colors, all as SVG, plus the
-//! rasterizer that turns them into PNGs for QML and for the server.
+//! rasterizer that turns them into PNGs for the UI and for the server.
 //!
 //! Ported from the desktop's `plugins/hermes-bots/avatar.tsx` and
 //! `lib/profile-color.ts`. Faces are drawn at rest; the desktop's idle
