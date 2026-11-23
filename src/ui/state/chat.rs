@@ -105,6 +105,13 @@ pub struct Row {
     // What the user opened.
     pub show_reasoning: bool,
     pub expanded: bool,
+    // When things happened, for the views' transitions (see `motion::fresh`).
+    /// Arrived during this session (`None` for rows loaded with the chat).
+    pub born: Option<Instant>,
+    /// Finished running.
+    pub settled_at: Option<Instant>,
+    /// The reasoning or the tool's details were last opened or closed.
+    pub toggled_at: Option<Instant>,
 }
 
 impl Row {
@@ -131,6 +138,9 @@ impl Row {
             row_id: -1,
             show_reasoning: false,
             expanded: false,
+            born: None,
+            settled_at: None,
+            toggled_at: None,
         }
     }
 
@@ -196,23 +206,35 @@ impl AppState {
 
     fn new_row(&mut self, role: Role) -> Row {
         self.next_row += 1;
-        Row::new(self.next_row, role)
+        let mut row = Row::new(self.next_row, role);
+        row.born = Some(Instant::now());
+        row
     }
 
     /// Edits row `ix` and has the list measure it again.
     fn edit_row(&mut self, ix: usize, f: impl FnOnce(&mut Row)) {
         if let Some(row) = self.rows.get_mut(ix) {
+            let was_done = row.done;
             f(row);
+            if row.done && !was_done {
+                row.settled_at = Some(Instant::now());
+            }
             self.list.splice(ix..ix + 1, 1);
         }
     }
 
     pub fn toggle_reasoning(&mut self, ix: usize) {
-        self.edit_row(ix, |r| r.show_reasoning = !r.show_reasoning);
+        self.edit_row(ix, |r| {
+            r.show_reasoning = !r.show_reasoning;
+            r.toggled_at = Some(Instant::now());
+        });
     }
 
     pub fn toggle_expanded(&mut self, ix: usize) {
-        self.edit_row(ix, |r| r.expanded = !r.expanded);
+        self.edit_row(ix, |r| {
+            r.expanded = !r.expanded;
+            r.toggled_at = Some(Instant::now());
+        });
     }
 
     /// Replaces the conversation, following its end.

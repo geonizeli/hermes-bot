@@ -11,6 +11,7 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use super::motion;
 use super::state::editor::{self as faces, pet_fields};
 use super::state::{AppEvent, AppState};
 use super::theme::{colors, hex};
@@ -405,7 +406,20 @@ impl EditBotDialog {
     fn render_pet_tab(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let c = colors(cx).clone();
         if self.pets_loading {
-            return div().flex().justify_center().child(widgets::spinner(24.)).into_any_element();
+            // The gallery's grid, breathing, until the list arrives.
+            let cells = (0..PET_PAGE).map(|i| {
+                div()
+                    .h(px(72.))
+                    .p(px(4.))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(6.))
+                    .child(motion::skeleton(id("pet-loading-thumb", i), px(40.), 40., &c))
+                    .child(motion::skeleton(id("pet-loading-name", i), px(44.), 8., &c))
+            });
+            return div().grid().grid_cols(PET_COLUMNS as u16).children(cells).into_any_element();
         }
         let mut col = div().flex().flex_col().gap(px(8.));
         if !self.pet_error.is_empty() {
@@ -458,8 +472,9 @@ impl EditBotDialog {
                     cx.notify();
                 }))
                 .child(match picture {
-                    Some(p) => img(p).size(px(40.)).object_fit(ObjectFit::Contain).into_any_element(),
-                    None => div().size(px(40.)).rounded(c.radius).bg(c.surface).into_any_element(),
+                    Some(p) => motion::fade_in(img(p).size(px(40.)).object_fit(ObjectFit::Contain), id("pet-thumb-in", &slug), motion::BASE)
+                        .into_any_element(),
+                    None => motion::skeleton(id("pet-thumb-loading", &slug), px(40.), 40., &c).into_any_element(),
                 })
                 .child(div().w_full().truncate().text_center().text_size(px(10.)).text_color(c.muted).child(name))
         });

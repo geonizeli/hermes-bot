@@ -9,6 +9,7 @@ use gpui_kit::*;
 use super::chat::{ChatView, SIDEBAR_WIDTH};
 use super::dialogs::{ConfirmModel, RequestDialog, SetupDialog, render_confirm};
 use super::edit_bot::EditBotDialog;
+use super::motion;
 use super::state::{AppEvent, AppState};
 use super::theme::colors;
 use super::widgets::{self, ident, Action, MenuItem, PopupMenu, id};
@@ -106,8 +107,22 @@ impl RootView {
                     .items_center()
                     .gap(px(12.))
                     .rounded(c.radius)
+                    // The highlight fades in under the picked bot while its
+                    // accent bar grows out from the middle.
                     .when(active, |d| {
-                        d.bg(c.raised).child(div().absolute().left_0().top_0().bottom_0().w(px(3.)).bg(c.accent))
+                        d.child(div().absolute().inset_0().rounded(c.radius).bg(c.raised).with_animation(
+                            id("bot-active-bg", &bot.name),
+                            Animation::new(motion::BASE).with_easing(motion::ease_out),
+                            |d, t| d.opacity(t),
+                        ))
+                        .child(div().absolute().left_0().w(px(3.)).bg(c.accent).with_animation(
+                            id("bot-active-bar", &bot.name),
+                            Animation::new(motion::SLOW).with_easing(motion::ease_out),
+                            |d, t| {
+                                let inset = 30. * (1. - t);
+                                d.top(px(inset)).bottom(px(inset))
+                            },
+                        ))
                     })
                     .when(!active, |d| {
                         d.hover(move |s| s.bg(hover)).cursor_pointer().on_click(move |_, _, cx| {
@@ -150,6 +165,28 @@ impl RootView {
             .collect();
         let empty = rows.is_empty() && !s.chat_loading && s.connected;
         let connecting = s.status.starts_with("Connecting") || s.status.starts_with("Reconnecting");
+        // Until the roster arrives, the shape of a few bots holds its place.
+        let placeholders = (rows.is_empty() && s.chat_loading).then(|| {
+            div().flex().flex_col().gap(px(2.)).children((0..3).map(|i| {
+                div()
+                    .h(px(60.))
+                    .mx(px(8.))
+                    .pl(px(12.))
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .child(motion::skeleton_circle(id("bot-loading-avatar", i), 38., &c))
+                    .child(
+                        div()
+                            .flex_1()
+                            .flex()
+                            .flex_col()
+                            .gap(px(7.))
+                            .child(motion::skeleton(id("bot-loading-name", i), px(110. - 18. * i as f32), 12., &c))
+                            .child(motion::skeleton(id("bot-loading-preview", i), relative(0.85), 10., &c)),
+                    )
+            }))
+        });
         let server_name = s.active_server().map(|sv| sv.name.clone()).unwrap_or_else(|| "No server".into());
         let server_status = if s.connected { "Connected".to_string() } else { s.status.clone() };
         let dot = if s.connected {
@@ -191,6 +228,7 @@ impl RootView {
                     .flex_col()
                     .gap(px(2.))
                     .children(rows)
+                    .children(placeholders)
                     .when(empty, |d| d.child(widgets::muted("No bots on this server", 14., &c).pt(px(40.)).text_center())),
             )
             .child(
@@ -210,7 +248,11 @@ impl RootView {
                             .gap(px(10.))
                             .rounded(c.radius)
                             .hover(move |s| s.bg(hover))
-                            .child(div().size(px(8.)).rounded_full().bg(dot))
+                            .child(if connecting {
+                                motion::breathe(div().size(px(8.)).rounded_full().bg(dot), "server-dot", 0.25).into_any_element()
+                            } else {
+                                div().size(px(8.)).rounded_full().bg(dot).into_any_element()
+                            })
                             .child(
                                 div()
                                     .flex_1()

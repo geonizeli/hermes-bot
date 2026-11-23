@@ -11,6 +11,7 @@ use std::time::Duration;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use super::motion;
 use super::state::{AppState, MediaState};
 use super::theme::{Colors, colors, hex};
 use super::widgets::{self, ident, id, mono};
@@ -255,19 +256,11 @@ pub fn remote_image(
     cx: &mut App,
 ) -> AnyElement {
     let c = colors(cx).clone();
+    // A breathing frame where the picture will be.
+    let pulse_key = ElementId::Name(format!("{key}-loading").into());
     let placeholder = move || {
-        div()
-            .w(px(160.))
-            .h(px(100.))
-            .rounded(c.radius)
-            .bg(c.surface)
-            .border_1()
-            .border_color(c.border)
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(widgets::spinner(20.))
-            .into_any_element()
+        let frame = div().w(px(160.)).h(px(100.)).rounded(c.radius).bg(c.foreground.alpha(0.07)).border_1().border_color(c.border);
+        motion::breathe(frame, pulse_key.clone(), 0.4).into_any_element()
     };
     // Rows are measured once, so the picture's box is sized before it loads.
     let source: Option<(ImageSource, String, (f32, f32))> = if !path.is_empty() {

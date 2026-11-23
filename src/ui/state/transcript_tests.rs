@@ -242,3 +242,31 @@ fn takes_pasted_images_and_files_as_attachments(cx: &mut TestAppContext) {
     state.update(cx, |s, cx| s.remove_attachment(first, cx));
     assert_eq!(state.read_with(cx, |s, _| s.pending.len()), 1);
 }
+
+/// The views animate rows by when things happened to them; loaded history
+/// has no such moments, so it never replays an entrance.
+#[gpui_kit::test]
+fn rows_remember_when_they_arrived_settled_and_opened(cx: &mut TestAppContext) {
+    let (state, _dir) = state(cx);
+    state.update(cx, |s, _| s.load_transcript(vec![json!({ "role": "user", "text": "earlier" })]));
+    assert!(state.read_with(cx, |s, _| s.rows[0].born.is_none()));
+
+    state.update(cx, |s, _| {
+        s.on_user_message("hi", Vec::new());
+        s.streaming = true;
+        s.mark_running("live-1", "default");
+    });
+    event(&state, cx, "tool.start", "live-1", json!({ "tool_id": "t1", "name": "terminal" }));
+    let tool = state.read_with(cx, |s, _| s.rows.iter().position(|r| r.role == Role::Tool).unwrap());
+    state.read_with(cx, |s, _| {
+        assert!(s.rows[1].born.is_some());
+        assert!(s.rows[tool].born.is_some() && s.rows[tool].settled_at.is_none());
+    });
+
+    event(&state, cx, "tool.complete", "live-1", json!({ "tool_id": "t1", "name": "terminal", "result": { "output": "ok" } }));
+    assert!(state.read_with(cx, |s, _| s.rows[tool].settled_at.is_some()));
+
+    assert!(state.read_with(cx, |s, _| s.rows[tool].toggled_at.is_none()));
+    state.update(cx, |s, _| s.toggle_expanded(tool));
+    assert!(state.read_with(cx, |s, _| s.rows[tool].toggled_at.is_some()));
+}
