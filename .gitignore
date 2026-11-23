@@ -2,4 +2,3 @@
 /pkgbuild/pkg/
 /pkgbuild/src/
 *.pkg.tar.*
-/.qmlls.ini
