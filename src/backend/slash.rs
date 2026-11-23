@@ -54,6 +54,8 @@ pub enum Local {
     /// compacting it (the official Bot Mode does the same).
     Compress,
     Help,
+    /// `/skin [theme]` shows or switches hermes-bot's theme.
+    Skin,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -78,7 +80,6 @@ const NOT_HERE: &[(&str, &str)] = &[
     ("/queue", ""),
     ("/btw", ""),
     ("/bg", ""),
-    ("/skin", "hermes-bot follows the Omarchy theme."),
     ("/pet", ""),
     ("/hatch", ""),
     ("/palette", ""),
@@ -105,6 +106,7 @@ fn local(canonical: &str) -> Option<Local> {
         "/reasoning" => Local::Reasoning,
         "/compress" | "/new" | "/clear" => Local::Compress,
         "/help" | "/commands" => Local::Help,
+        "/skin" => Local::Skin,
         _ => return None,
     })
 }
@@ -116,6 +118,7 @@ fn local_description(canonical: &str) -> Option<&'static str> {
         "/stop" => "Stop the bot's answer",
         "/model" => "Pick the model for this chat",
         "/help" => "Show the commands you can use here",
+        "/skin" => "Show or switch the app's theme (system, dark, light, omarchy)",
         _ => return None,
     })
 }

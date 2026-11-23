@@ -505,3 +505,53 @@ fn loading_shows_placeholders_where_content_will_be(cx: &mut TestAppContext) {
         assert!(w.try_find(super::widgets::id("bot", "default")).is_some());
     });
 }
+
+#[gpui_kit::test]
+fn the_theme_switches_and_is_remembered(cx: &mut TestAppContext) {
+    use crate::backend::theme::ThemeChoice;
+    let h = open(cx);
+    let dark = |cx: &mut TestAppContext| cx.read(|cx| super::theme::colors(cx).is_dark());
+
+    h.state.update(cx, |s, cx| s.set_theme(ThemeChoice::Light, cx));
+    assert!(!dark(cx));
+    assert_eq!(h.state.read_with(cx, |s, _| s.config.ui.theme.clone()), Some("light".into()));
+
+    // "Match system" follows the desktop's preference as it changes.
+    h.state.update(cx, |s, cx| s.set_theme(ThemeChoice::System, cx));
+    cx.update(|cx| super::theme::set_appearance(gpui_kit::WindowAppearance::Dark, cx));
+    assert!(dark(cx));
+    cx.update(|cx| super::theme::set_appearance(gpui_kit::WindowAppearance::Light, cx));
+    assert!(!dark(cx));
+
+    // /skin switches too, and says what it did.
+    h.focus_composer(cx);
+    h.ui(cx, |w, cx| w.input("/skin dark", cx));
+    h.ui(cx, |w, cx| w.press("enter", cx));
+    assert!(dark(cx));
+    h.state.read_with(cx, |s, _| {
+        let row = s.rows.last().expect("a command row");
+        assert_eq!(row.name, "/skin");
+        assert_eq!(row.text, "Theme: Dark.");
+        assert_eq!(s.config.ui.theme.as_deref(), Some("dark"));
+    });
+}
+
+#[gpui_kit::test]
+fn the_window_draws_its_frame_only_where_the_compositor_does_not(cx: &mut TestAppContext) {
+    let h = open(cx);
+    h.ui(cx, |w, _| {
+        assert!(w.try_find("title-bar").is_none(), "a compositor-drawn frame needs no title bar of ours");
+        assert!(w.try_find("root").is_some());
+    });
+
+    // GNOME on Wayland leaves the frame to the app.
+    cx.simulate_window_decorations_change(h.window, gpui_kit::Decorations::Client { tiling: Default::default() });
+    h.ui(cx, |w, _| {
+        assert!(w.try_find("title-bar").is_some(), "the window draws its own title bar");
+        assert!(w.try_find("close").is_some(), "with a close button");
+        assert!(w.try_find("root").is_some(), "the chat is still there");
+    });
+
+    cx.simulate_window_decorations_change(h.window, gpui_kit::Decorations::Server);
+    h.ui(cx, |w, _| assert!(w.try_find("title-bar").is_none()));
+}

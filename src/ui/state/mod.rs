@@ -21,6 +21,7 @@ use crate::backend::cron;
 use crate::backend::gateway::{Gateway, Incoming, UNAUTHORIZED};
 use crate::backend::slash;
 use crate::backend::store::{self, Config, Server, Tokens};
+use crate::backend::theme::ThemeChoice;
 use crate::backend::{attachments, history, media};
 use crate::backend::{roster, runtime, session};
 
@@ -164,6 +165,10 @@ pub struct AppState {
 
 impl EventEmitter<AppEvent> for AppState {}
 
+/// Shown while a sign-in is held in memory for want of a keyring.
+const NO_KEYRING: &str = "There's no keyring to save your sign-in, so you'll need to sign in again after quitting. \
+     Install and unlock a Secret Service keyring (GNOME Keyring, KWallet or KeePassXC) to stay signed in.";
+
 /// Text of a transcript message, whichever shape the server used.
 fn message_text(m: &Value) -> String {
     if let Some(text) = m.get("text").and_then(Value::as_str) {
@@ -273,6 +278,8 @@ impl AppState {
     pub fn with_config(config: Config, config_path: PathBuf, cx: &mut Context<Self>) -> Self {
         let list = ListState::new(0, ListAlignment::Top, px(1000.));
         list.set_follow_mode(gpui_kit::FollowMode::Tail);
+        let saved_theme = config.ui.theme.as_deref().and_then(ThemeChoice::parse);
+        super::theme::set_choice(saved_theme, cx);
         AppState {
             status: String::new(),
             error: String::new(),
@@ -365,6 +372,14 @@ impl AppState {
 
     // ── connection ──
 
+    /// Switches the theme and remembers it.
+    pub fn set_theme(&mut self, choice: ThemeChoice, cx: &mut Context<Self>) {
+        self.config.ui.theme = Some(choice.key().to_string());
+        self.save_config();
+        super::theme::set_choice(Some(choice), cx);
+        cx.notify();
+    }
+
     fn save_config(&mut self) {
         if let Err(e) = store::save(&self.config_path, &self.config) {
             self.error = e;
@@ -432,7 +447,11 @@ impl AppState {
                         }));
                         app.gateway = Some(gateway);
                         app.connected = true;
-                        app.error.clear();
+                        app.error = if store::is_in_memory(&server.id) {
+                            NO_KEYRING.to_string()
+                        } else {
+                            String::new()
+                        };
                         app.status = format!("Connected to {}", server.name);
                         app.load_bots(cx);
                     }

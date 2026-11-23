@@ -1,4 +1,8 @@
 //! The server list (a JSON file) and each server's tokens (the keyring).
+//!
+//! Tokens go to the desktop's Secret Service keyring (GNOME Keyring,
+//! KWallet, KeePassXC…). Without one, they're kept in memory instead: signing
+//! in still works, and lasts until the app quits.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -41,6 +45,10 @@ pub struct UiPrefs {
     /// "jobs" or "screen".
     #[serde(default = "jobs_tab")]
     pub side_panel_tab: String,
+    /// "system", "dark", "light" or "omarchy"; unset means the default
+    /// (Omarchy's theme where it's installed, otherwise the system's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
 }
 
 fn yes() -> bool {
@@ -53,7 +61,7 @@ fn jobs_tab() -> String {
 
 impl Default for UiPrefs {
     fn default() -> Self {
-        UiPrefs { side_panel_open: true, side_panel_tab: jobs_tab() }
+        UiPrefs { side_panel_open: true, side_panel_tab: jobs_tab(), theme: None }
     }
 }
 
@@ -149,23 +157,50 @@ pub fn now() -> i64 {
 
 const KEYRING_SERVICE: &str = "hermes-bot";
 
+/// Sign-ins the keyring couldn't take, by server id, for this run only.
+static IN_MEMORY: std::sync::Mutex<Option<HashMap<String, String>>> = std::sync::Mutex::new(None);
+
+fn in_memory<R>(f: impl FnOnce(&mut HashMap<String, String>) -> R) -> R {
+    let mut guard = IN_MEMORY.lock().unwrap_or_else(|e| e.into_inner());
+    f(guard.get_or_insert_with(HashMap::new))
+}
+
 fn entry(server_id: &str) -> Result<keyring::Entry, String> {
     keyring::Entry::new(KEYRING_SERVICE, server_id).map_err(|e| format!("Keyring unavailable: {e}"))
 }
 
 pub fn load_tokens(server_id: &str) -> Option<Tokens> {
-    let secret = entry(server_id).ok()?.get_password().ok()?;
+    let secret = in_memory(|m| m.get(server_id).cloned())
+        .or_else(|| entry(server_id).ok()?.get_password().ok())?;
     serde_json::from_str(&secret).ok()
 }
 
+/// Stores a sign-in in the keyring, or in memory when there's no keyring
+/// (see `is_in_memory`).
 pub fn save_tokens(server_id: &str, tokens: &Tokens) -> Result<(), String> {
     let json = serde_json::to_string(tokens).map_err(|e| e.to_string())?;
-    entry(server_id)?
-        .set_password(&json)
-        .map_err(|e| format!("Couldn't store the sign-in in the keyring: {e}"))
+    save_secret(server_id, json, |json| entry(server_id)?.set_password(json).map_err(|e| e.to_string()));
+    Ok(())
+}
+
+/// `keyring` stores the secret for good; when it fails the secret is kept
+/// for this run. Once a server's sign-in is in memory it stays there, so a
+/// refreshed token doesn't land in a keyring that holds an older one.
+fn save_secret(server_id: &str, json: String, keyring: impl FnOnce(&str) -> Result<(), String>) {
+    let held = in_memory(|m| m.contains_key(server_id));
+    if held || keyring(&json).is_err() {
+        in_memory(|m| m.insert(server_id.to_string(), json));
+    }
+}
+
+/// The server's sign-in lasts only until the app quits: there was no
+/// keyring to keep it in.
+pub fn is_in_memory(server_id: &str) -> bool {
+    in_memory(|m| m.contains_key(server_id))
 }
 
 pub fn delete_tokens(server_id: &str) {
+    in_memory(|m| m.remove(server_id));
     if let Ok(entry) = entry(server_id) {
         let _ = entry.delete_credential();
     }
@@ -174,6 +209,26 @@ pub fn delete_tokens(server_id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keeps_sign_ins_in_memory_without_a_keyring() {
+        let mut stored = None;
+        save_secret("with-keyring", "a".into(), |json| {
+            stored = Some(json.to_string());
+            Ok(())
+        });
+        assert_eq!(stored.as_deref(), Some("a"));
+        assert!(!is_in_memory("with-keyring"));
+
+        save_secret("no-keyring", "b".into(), |_| Err("no Secret Service".into()));
+        assert!(is_in_memory("no-keyring"));
+        // Later refreshes stay in memory too, even if a keyring appears.
+        save_secret("no-keyring", "c".into(), |_| panic!("the keyring isn't asked again"));
+        assert_eq!(in_memory(|m| m.get("no-keyring").cloned()).as_deref(), Some("c"));
+
+        delete_tokens("no-keyring");
+        assert!(!is_in_memory("no-keyring"));
+    }
 
     #[test]
     fn normalizes_addresses() {

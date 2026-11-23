@@ -11,7 +11,7 @@ use super::dialogs::{ConfirmModel, RequestDialog, SetupDialog, render_confirm};
 use super::edit_bot::EditBotDialog;
 use super::motion;
 use super::state::{AppEvent, AppState};
-use super::theme::colors;
+use super::theme::{self, colors};
 use super::widgets::{self, ident, Action, MenuItem, PopupMenu, id};
 
 pub struct RootView {
@@ -45,7 +45,10 @@ impl RootView {
                 cx,
             )
         });
+        theme::set_appearance(window.appearance(), cx);
         let subscriptions = vec![
+            // "Match system" follows the desktop's light/dark switch live.
+            cx.observe_window_appearance(window, |_, window, cx| theme::set_appearance(window.appearance(), cx)),
             cx.observe(&state, |_, _, cx| cx.notify()),
             cx.observe(&setup, |_, _, cx| cx.notify()),
             cx.observe(&request, |_, _, cx| cx.notify()),
@@ -78,7 +81,22 @@ impl RootView {
         })
     }
 
-    fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The themes to pick from, the one in effect checked.
+    fn theme_menu(&self, at: Point<Pixels>, cx: &App) -> PopupMenu {
+        let theme = theme::theme_state(cx);
+        let current = theme.effective();
+        let items = theme
+            .choices()
+            .into_iter()
+            .map(|choice| {
+                let state = self.state.clone();
+                MenuItem::new(choice.label(), move |_, cx| state.update(cx, |s, cx| s.set_theme(choice, cx))).checked(choice == current)
+            })
+            .collect();
+        PopupMenu::new(at, items).upward()
+    }
+
+    fn render_sidebar(&self, cx: &mut Context<Self>) -> Div {
         let c = colors(cx).clone();
         let s = self.state.read(cx);
         let rows: Vec<_> = s
@@ -289,6 +307,13 @@ impl RootView {
                         }
                         let setup = this.setup.clone();
                         items.push(MenuItem::new("Manage servers…", move |window, cx| setup.update(cx, |d, cx| d.show(window, cx))));
+                        let (root, at) = (cx.entity().downgrade(), e.position());
+                        items.push(MenuItem::new("Theme…", move |_, cx| {
+                            let _ = root.update(cx, |this, cx| {
+                                this.menu = Some(this.theme_menu(at, cx));
+                                cx.notify();
+                            });
+                        }));
                         this.menu = Some(PopupMenu::new(e.position(), items).upward());
                         cx.notify();
                     })),
@@ -330,10 +355,19 @@ impl Render for RootView {
                 cx,
             )
         });
-        let sidebar = self.render_sidebar(cx).into_any_element();
-        ident("root")
+        // Most compositors draw the window's frame; where they leave it to
+        // the app (GNOME on Wayland) the window draws its own title bar,
+        // shadow and resize edges.
+        let client_decorated = matches!(window.window_decorations(), Decorations::Client { .. });
+        let radii = gpui_kit::component::window_corner_radii(window, cx);
+        let sidebar = self.render_sidebar(cx).rounded_bl(radii.bottom_left);
+        let body = ident("root")
             .relative()
-            .size_full()
+            .w_full()
+            .flex_1()
+            .min_h_0()
+            .rounded_bl(radii.bottom_left)
+            .rounded_br(radii.bottom_right)
             .flex()
             .bg(c.background)
             .text_color(c.foreground)
@@ -344,6 +378,14 @@ impl Render for RootView {
             .when(self.edit.read(cx).open, |d| d.child(self.edit.clone()))
             .when(self.request.read(cx).open, |d| d.child(self.request.clone()))
             .children(confirm)
-            .when_some(self.menu.as_ref(), |d, menu| d.child(menu.render(close_menu, cx)))
+            .when_some(self.menu.as_ref(), |d, menu| d.child(menu.render(close_menu, cx)));
+        let title_bar = client_decorated.then(|| {
+            gpui_kit::component::TitleBar::new().child(
+                div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(c.muted).child(self.title.clone()),
+            )
+        });
+        gpui_kit::component::window_border().child(
+            div().size_full().flex().flex_col().text_color(c.foreground).children(title_bar).child(body),
+        )
     }
 }
