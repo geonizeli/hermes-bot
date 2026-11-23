@@ -127,6 +127,8 @@ pub struct AppState {
     /// Output of a running screen install.
     pub screen_log: String,
     pub config: Config,
+    /// Where `config` is saved.
+    config_path: PathBuf,
 
     // ── the open conversation (see chat.rs) ──
     pub rows: Vec<Row>,
@@ -156,7 +158,7 @@ pub struct AppState {
     /// Server path → fetched file.
     pub media: HashMap<String, MediaState>,
     /// Each bot's slash commands, from `commands.catalog`.
-    catalogs: HashMap<String, slash::Catalog>,
+    pub(crate) catalogs: HashMap<String, slash::Catalog>,
     queue: Queue<AppState>,
 }
 
@@ -254,16 +256,26 @@ fn models_for_view(result: &Value) -> Vec<Provider> {
 }
 
 impl AppState {
+    /// The app's state from the saved config, connecting to the active server.
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let list = ListState::new(0, ListAlignment::Top, px(1000.));
-        list.set_follow_mode(gpui_kit::FollowMode::Tail);
-        let (config, error) = match store::load(&store::config_path()) {
+        let path = store::config_path();
+        let (config, error) = match store::load(&path) {
             Ok(config) => (config, String::new()),
             Err(e) => (Config::default(), e),
         };
-        let mut state = AppState {
+        let mut state = Self::with_config(config, path, cx);
+        state.error = error;
+        state.connect_active(cx);
+        state
+    }
+
+    /// State for `config`, saved to `config_path`, not yet connected.
+    pub fn with_config(config: Config, config_path: PathBuf, cx: &mut Context<Self>) -> Self {
+        let list = ListState::new(0, ListAlignment::Top, px(1000.));
+        list.set_follow_mode(gpui_kit::FollowMode::Tail);
+        AppState {
             status: String::new(),
-            error,
+            error: String::new(),
             busy: false,
             connected: false,
             bots: Vec::new(),
@@ -283,6 +295,7 @@ impl AppState {
             screen_busy: false,
             screen_log: String::new(),
             config,
+            config_path,
             rows: Vec::new(),
             list,
             assistant_row: None,
@@ -300,9 +313,7 @@ impl AppState {
             media: HashMap::new(),
             catalogs: HashMap::new(),
             queue: Queue::new(cx),
-        };
-        state.connect_active(cx);
-        state
+        }
     }
 
     // ── reading ──
@@ -355,7 +366,7 @@ impl AppState {
     // ── connection ──
 
     fn save_config(&mut self) {
-        if let Err(e) = store::save(&store::config_path(), &self.config) {
+        if let Err(e) = store::save(&self.config_path, &self.config) {
             self.error = e;
         }
     }
@@ -371,7 +382,7 @@ impl AppState {
         self.running.remove(live)
     }
 
-    fn disconnect(&mut self) {
+    pub(crate) fn disconnect(&mut self) {
         self.generation += 1;
         if let Some(gateway) = self.gateway.take() {
             gateway.close();
@@ -1724,3 +1735,6 @@ mod tests {
         assert!(!providers[0].authenticated);
     }
 }
+
+#[cfg(test)]
+mod transcript_tests;

@@ -17,7 +17,7 @@ use super::side_panel;
 use super::state::{AppState, Role, Row};
 use super::theme::colors;
 use super::tool_card;
-use super::widgets::{self, accent_surface, id, mono};
+use super::widgets::{self, ident, accent_surface, id, mono};
 
 pub const SIDEBAR_WIDTH: f32 = 280.;
 const HEADER_HEIGHT: f32 = 56.;
@@ -26,12 +26,12 @@ const COLUMN_MAX: f32 = 780.;
 
 pub struct ChatView {
     state: Entity<AppState>,
-    composer: Entity<Composer>,
-    screen: Entity<ScreenView>,
+    pub(crate) composer: Entity<Composer>,
+    pub(crate) screen: Entity<ScreenView>,
     screen_expanded: bool,
     /// The bot whose screen is connected ("" when none).
     run_key: String,
-    jobs_expanded: Entity<HashSet<String>>,
+    pub(crate) jobs_expanded: Entity<HashSet<String>>,
     on_edit_bot: std::rc::Rc<dyn Fn(String, &mut Window, &mut App)>,
     _subscriptions: Vec<Subscription>,
     _poll: Task<()>,
@@ -148,8 +148,7 @@ impl ChatView {
             let on = open && tab == name;
             let hover = c.raised.alpha(0.6);
             let state = self.state.clone();
-            div()
-                .id(id("toggle", name))
+            ident(id("toggle", name))
                 .h(px(30.))
                 .px(px(12.))
                 .flex()
@@ -177,8 +176,7 @@ impl ChatView {
             .border_b_1()
             .border_color(c.border)
             .child(
-                div()
-                    .id("bot-identity")
+                ident("bot-identity")
                     .flex()
                     .flex_none()
                     .items_center()
@@ -199,8 +197,7 @@ impl ChatView {
                 );
                 let fill = (u.percent / 100.0).clamp(0.0, 1.0) as f32;
                 d.child(
-                    div()
-                        .id("context-gauge")
+                    ident("context-gauge")
                         .w(px(120.))
                         .flex_none()
                         .flex()
@@ -348,8 +345,7 @@ fn render_assistant(ix: usize, row: &Row, state: &Entity<AppState>, window: &mut
         };
         let label = format!("{label}  {}", if row.show_reasoning { "▾" } else { "▸" });
         let st = state.clone();
-        let el = div()
-            .id(id("reasoning-toggle", row.id))
+        let el = ident(id("reasoning-toggle", row.id))
             .h(px(22.))
             .flex()
             .items_center()
@@ -515,8 +511,7 @@ impl Render for ChatView {
             let st = self.state.clone();
             let hover = c.raised;
             div().absolute().bottom(px(16.)).left_0().right_0().flex().justify_center().child(
-                div()
-                    .id("jump-down")
+                ident("jump-down")
                     .size(px(36.))
                     .flex()
                     .items_center()
@@ -565,8 +560,7 @@ impl Render for ChatView {
                     .border_color(c.danger.alpha(0.5))
                     .child(div().flex_1().text_size(px(13.)).child(error.clone()))
                     .child(
-                        div()
-                            .id("dismiss-error")
+                        ident("dismiss-error")
                             .text_color(c.muted)
                             .cursor_pointer()
                             .child("✕")
@@ -610,8 +604,7 @@ impl Render for ChatView {
             } else {
                 side_panel::jobs_panel(&self.state, &self.jobs_expanded, cx)
             };
-            div()
-                .id("side-panel")
+            ident("side-panel")
                 .absolute()
                 .top(px(HEADER_HEIGHT))
                 .bottom_0()
@@ -627,8 +620,7 @@ impl Render for ChatView {
 
         let expanded_screen = (self.screen_expanded && has_bot).then(|| {
             let collapse = on_expand.clone();
-            div()
-                .id("expanded-screen")
+            ident("expanded-screen")
                 .absolute()
                 .top(px(HEADER_HEIGHT))
                 .left_0()
@@ -638,8 +630,7 @@ impl Render for ChatView {
                 .bg(black())
                 .child(self.screen.clone())
                 .child(
-                    div()
-                        .id("collapse-screen")
+                    ident("collapse-screen")
                         .absolute()
                         .top(px(12.))
                         .right(px(12.))
@@ -660,8 +651,7 @@ impl Render for ChatView {
         });
 
         let drop_target = c.accent;
-        div()
-            .id("chat-view")
+        ident("chat-view")
             .relative()
             .flex_1()
             .min_w_0()

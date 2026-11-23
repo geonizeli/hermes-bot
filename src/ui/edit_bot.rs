@@ -14,7 +14,7 @@ use gpui_kit::*;
 use super::state::editor::{self as faces, pet_fields};
 use super::state::{AppEvent, AppState};
 use super::theme::{colors, hex};
-use super::widgets::{self, id, modal, muted};
+use super::widgets::{self, Ident, ident, id, modal, muted};
 use crate::backend::botedit::Look;
 
 const PET_COLUMNS: usize = 3;
@@ -267,11 +267,10 @@ impl EditBotDialog {
         }
     }
 
-    fn face_tile(&self, key: ElementId, picture: Option<PathBuf>, label: &str, tip: String, selected: bool, cx: &App) -> Stateful<Div> {
+    fn face_tile(&self, key: ElementId, picture: Option<PathBuf>, label: &str, tip: String, selected: bool, cx: &App) -> Ident {
         let c = colors(cx);
         let hover = c.raised;
-        div()
-            .id(key)
+        ident(key)
             .size(px(44.))
             .flex()
             .items_center()
@@ -343,8 +342,7 @@ impl EditBotDialog {
                 let on = *sw == self.picked_color;
                 let color = hex(&faces::face_color(sw, &self.bot_name));
                 let sw = sw.clone();
-                div()
-                    .id(id("swatch", ix))
+                ident(id("swatch", ix))
                     .size(px(22.))
                     .rounded_full()
                     .bg(color)
@@ -434,8 +432,7 @@ impl EditBotDialog {
             let picture = self.thumbs.get(&slug).cloned().flatten();
             let hover = c.raised;
             let pick_slug = slug.clone();
-            div()
-                .id(id("pet", &slug))
+            ident(id("pet", &slug))
                 .h(px(72.))
                 .p(px(4.))
                 .flex()
@@ -518,8 +515,7 @@ impl Render for EditBotDialog {
         let tabs = [(Tab::Bot, "Bot"), (Tab::Generate, "Generate"), (Tab::Upload, "Upload"), (Tab::Pet, "Pet")].map(|(tab, label)| {
             let on = self.tab == tab;
             let hover = c.raised.alpha(0.5);
-            div()
-                .id(id("edit-tab", label))
+            ident(id("edit-tab", label))
                 .h(px(28.))
                 .px(px(12.))
                 .flex()
@@ -557,8 +553,7 @@ impl Render for EditBotDialog {
                     .child(muted(format!("Appearance and role for {} ({}).", self.display_name, self.bot_name), 13., &c)),
             )
             .child(
-                div()
-                    .id("edit-body")
+                ident("edit-body")
                     .px(px(20.))
                     .py(px(14.))
                     .overflow_y_scroll()

@@ -21,11 +21,26 @@ impl<T: 'static> Queue<T> {
     /// the entity lives.
     pub fn new(cx: &mut Context<T>) -> Self {
         let (tx, mut rx) = mpsc::unbounded_channel::<Call<T>>();
+        #[cfg(not(test))]
         cx.spawn(async move |this, cx| {
             while let Some(call) = rx.recv().await {
                 if this.update(cx, |state, cx| call(state, cx)).is_err() {
                     break;
                 }
+            }
+        })
+        .detach();
+        // GPUI's test scheduler rejects wake-ups from other threads, so tests
+        // poll on its clock instead of being woken by the network thread.
+        #[cfg(test)]
+        cx.spawn(async move |this, cx| {
+            loop {
+                while let Ok(call) = rx.try_recv() {
+                    if this.update(cx, |state, cx| call(state, cx)).is_err() {
+                        return;
+                    }
+                }
+                cx.background_executor().timer(std::time::Duration::from_millis(10)).await;
             }
         })
         .detach();

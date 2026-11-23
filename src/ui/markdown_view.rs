@@ -13,7 +13,7 @@ use gpui_kit::*;
 
 use super::state::{AppState, MediaState};
 use super::theme::{Colors, colors, hex};
-use super::widgets::{self, id, mono};
+use super::widgets::{self, ident, id, mono};
 use crate::backend::markdown::{self, Block, Para, ParaKind, Span};
 
 thread_local! {
@@ -175,8 +175,7 @@ fn code_block(key: String, lang: &str, raw: &str, spans: &[Span], window: &mut W
         .child(header)
         .child(
             // Long lines scroll sideways instead of wrapping.
-            div()
-                .id(id("code-scroll", &key))
+            ident(id("code-scroll", &key))
                 .max_h(px(560.))
                 .overflow_scroll()
                 .child(
@@ -214,8 +213,7 @@ fn table(key: String, rows: &[Vec<Para>], state: &Entity<AppState>, cx: &App) ->
             .when(r > 0, |d| d.border_t_1().border_color(c.border))
             .children(cells)
     });
-    div()
-        .id(id("table", &key))
+    ident(id("table", &key))
         .w_full()
         .overflow_x_scroll()
         .child(
@@ -300,8 +298,7 @@ pub fn remote_image(
     };
     let Some((source, open, (w, h))) = source else { return placeholder() };
     let fallback = placeholder.clone();
-    div()
-        .id(key)
+    ident(key)
         .cursor_pointer()
         .on_click(move |_, _, cx| cx.open_url(&open))
         .child(

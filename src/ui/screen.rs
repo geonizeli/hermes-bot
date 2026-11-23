@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 
 use super::queue::Queue;
 use super::theme::colors;
-use super::widgets;
+use super::widgets::{self, ident};
 use crate::backend::rfb::{self, Input, SharedFrame};
 use crate::backend::{runtime, session};
 
@@ -36,7 +36,7 @@ pub struct ScreenView {
     pub frame_height: u32,
 
     frame: SharedFrame,
-    image: Option<Arc<RenderImage>>,
+    pub(crate) image: Option<Arc<RenderImage>>,
     input: Option<mpsc::UnboundedSender<Input>>,
     viewer_id: String,
     /// Bumped on attach/detach so a finished session's callbacks are ignored.
@@ -447,8 +447,7 @@ impl Render for ScreenView {
         let c = colors(cx).clone();
         let bounds = self.bounds.clone();
         let in_control = self.in_control;
-        div()
-            .id("screen-view")
+        ident("screen-view")
             .track_focus(&self.focus)
             .relative()
             .size_full()

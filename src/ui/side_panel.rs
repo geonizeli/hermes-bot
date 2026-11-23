@@ -11,7 +11,7 @@ use serde_json::Value;
 use super::screen::{ScreenState, ScreenView};
 use super::state::AppState;
 use super::theme::{Colors, colors};
-use super::widgets::{self, id, mono};
+use super::widgets::{self, ident, id, mono};
 
 fn parse_time(iso: &str) -> Option<DateTime<Local>> {
     DateTime::parse_from_rfc3339(iso.trim())
@@ -156,8 +156,7 @@ pub fn jobs_panel(state: &Entity<AppState>, expanded: &Entity<HashSet<String>>, 
             let toggle = expanded.clone();
             let toggle_key = key.clone();
             let hover = c.raised;
-            div()
-                .id(id("job", &key))
+            ident(id("job", &key))
                 .mx(px(12.))
                 .p(px(12.))
                 .flex()
@@ -244,8 +243,7 @@ pub fn jobs_panel(state: &Entity<AppState>, expanded: &Entity<HashSet<String>>, 
             d.child(div().m(px(16.)).text_size(px(13.)).text_color(c.danger).child(format!("Couldn't load jobs: {}", s.jobs_error)))
         })
         .child(
-            div()
-                .id("jobs-list")
+            ident("jobs-list")
                 .flex_1()
                 .overflow_y_scroll()
                 .py(px(12.))
@@ -359,8 +357,7 @@ pub fn screen_panel(
     let ended = view.state == ScreenState::Ended;
     let extra_message = (running && !ended && !view.message.is_empty()).then(|| view.message.clone());
 
-    let body = div()
-        .id("screen-body")
+    let body = ident("screen-body")
         .flex_1()
         .overflow_y_scroll()
         .p(px(16.))
@@ -408,8 +405,7 @@ pub fn screen_panel(
         })
         .when(running, |d| {
             let expand = on_expand.clone();
-            let holder = div()
-                .id("screen-holder")
+            let holder = ident("screen-holder")
                 .w_full()
                 .flex_none()
                 .rounded(c.radius)

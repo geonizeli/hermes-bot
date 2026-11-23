@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 use super::state::{AppEvent, AppState};
 use super::theme::colors;
-use super::widgets::{self, heading, id, modal, mono, muted};
+use super::widgets::{self, Ident, ident, heading, id, modal, mono, muted};
 use crate::backend::auth::ServerInfo;
 
 // ── servers ──
@@ -229,8 +229,7 @@ impl Render for SetupDialog {
             .flex_col()
             .child(div().px(px(20.)).pt(px(18.)).pb(px(10.)).text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).child("Servers"))
             .child(
-                div()
-                    .id("setup-body")
+                ident("setup-body")
                     .px(px(20.))
                     .pb(px(12.))
                     .overflow_y_scroll()
@@ -436,8 +435,7 @@ impl Render for RequestDialog {
             .flex_col()
             .child(div().px(px(20.)).pt(px(18.)).pb(px(10.)).text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).child(title))
             .child(
-                div()
-                    .id("request-body")
+                ident("request-body")
                     .px(px(20.))
                     .overflow_y_scroll()
                     .flex()
@@ -516,7 +514,7 @@ pub struct ConfirmModel {
     pub provider: String,
 }
 
-pub fn render_confirm(confirm: &ConfirmModel, on_yes: impl Fn(&mut Window, &mut App) + 'static, on_no: impl Fn(&mut Window, &mut App) + 'static, cx: &App) -> Stateful<Div> {
+pub fn render_confirm(confirm: &ConfirmModel, on_yes: impl Fn(&mut Window, &mut App) + 'static, on_no: impl Fn(&mut Window, &mut App) + 'static, cx: &App) -> Ident {
     let c = colors(cx);
     let content = div()
         .p(px(20.))

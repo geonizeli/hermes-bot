@@ -216,7 +216,7 @@ impl AppState {
     }
 
     /// Replaces the conversation, following its end.
-    pub(super) fn load_transcript(&mut self, rows: Vec<Value>) {
+    pub(crate) fn load_transcript(&mut self, rows: Vec<Value>) {
         self.rows.clear();
         self.assistant_row = None;
         self.todo_row = None;

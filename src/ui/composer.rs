@@ -13,17 +13,17 @@ use serde_json::Value;
 use super::state::{AppEvent, AppState, Provider};
 use super::state::commands::Suggestion;
 use super::theme::colors;
-use super::widgets::{self, MenuItem, PopupMenu, id, mono};
+use super::widgets::{self, ident, MenuItem, PopupMenu, id, mono};
 
 pub struct Composer {
     state: Entity<AppState>,
-    input: Entity<TextareaState>,
+    pub(crate) input: Entity<TextareaState>,
     /// Editing your latest message: sending replaces it and what followed.
-    editing: bool,
+    pub(crate) editing: bool,
     suggestions: Vec<Suggestion>,
     suggestion_index: usize,
     menu_dismissed: bool,
-    picker_open: bool,
+    pub(crate) picker_open: bool,
     picker_search: Entity<InputState>,
     effort_menu: Option<PopupMenu>,
     placeholder: String,
@@ -248,8 +248,7 @@ impl Composer {
             let (m, p) = (model.clone(), provider.clone());
             let hover = c.raised;
             children.push(
-                div()
-                    .id(id("model", ix))
+                ident(id("model", ix))
                     .h(px(32.))
                     .px(px(8.))
                     .flex()
@@ -281,8 +280,7 @@ impl Composer {
                     .into_any_element(),
             );
         }
-        div()
-            .id("model-picker")
+        ident("model-picker")
             .occlude()
             .absolute()
             .left_0()
@@ -311,7 +309,7 @@ impl Composer {
                 }
             }))
             .child(gpui_kit::component::input::Input::new(&self.picker_search))
-            .child(div().id("model-list").max_h(px(400.)).overflow_y_scroll().flex().flex_col().children(children))
+            .child(ident("model-list").max_h(px(400.)).overflow_y_scroll().flex().flex_col().children(children))
     }
 
     fn render_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -320,8 +318,7 @@ impl Composer {
         let rows = self.suggestions.iter().enumerate().map(|(ix, s)| {
             let selected = ix == self.suggestion_index;
             let hover = c.surface;
-            div()
-                .id(id("slash", ix))
+            ident(id("slash", ix))
                 .h(px(34.))
                 .px(px(10.))
                 .flex()
@@ -337,8 +334,7 @@ impl Composer {
                 .when(s.skill, |d| d.child(div().flex_none().text_size(px(11.)).text_color(c.accent).child("skill")))
                 .child(div().flex_1().min_w_0().truncate().text_size(px(12.)).text_color(c.muted).child(s.meta.clone()))
         });
-        div()
-            .id("slash-menu")
+        ident("slash-menu")
             .occlude()
             .absolute()
             .left_0()
@@ -436,8 +432,7 @@ impl Render for Composer {
         let chips = (!pending.is_empty()).then(|| {
             div().flex().flex_wrap().gap(px(6.)).children(pending.iter().map(|(aid, image, name, path)| {
                 let aid = *aid;
-                let remove = div()
-                    .id(id("remove-attachment", aid))
+                let remove = ident(id("remove-attachment", aid))
                     .absolute()
                     .top(px(3.))
                     .right(px(3.))
@@ -511,8 +506,7 @@ impl Render for Composer {
 
         let action_button = {
             let ink = if live { c.accent_foreground } else { c.muted };
-            div()
-                .id("send")
+            ident("send")
                 .size(px(36.))
                 .flex_none()
                 .rounded_full()
@@ -564,8 +558,7 @@ impl Render for Composer {
             })
         };
 
-        div()
-            .id("composer")
+        ident("composer")
             .relative()
             .w_full()
             .px(px(16.))

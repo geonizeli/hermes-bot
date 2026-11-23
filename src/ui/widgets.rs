@@ -12,6 +12,15 @@ use gpui_kit::*;
 
 use super::theme::{Colors, colors, tint};
 
+/// An identified element. Test builds register it so headless UI tests can
+/// find and click it; elsewhere this is a plain `ident(key)`.
+pub type Ident = gpui_kit::base::ObservedElement<Stateful<Div>>;
+
+pub fn ident(key: impl Into<ElementId>) -> Ident {
+    use gpui_kit::TestSupportExt as _;
+    div().id(key).test_support()
+}
+
 pub fn id(prefix: &str, key: impl std::fmt::Display) -> ElementId {
     ElementId::Name(SharedString::from(format!("{prefix}-{key}")))
 }
@@ -79,15 +88,14 @@ pub fn pulse_dot(key: impl Into<ElementId>, color: Hsla, size: f32) -> impl Into
 }
 
 /// A small rounded control (the composer's model and effort pickers).
-pub fn chip(key: impl Into<ElementId>, text: impl Into<SharedString>, active: bool, c: &Colors) -> Stateful<Div> {
+pub fn chip(key: impl Into<ElementId>, text: impl Into<SharedString>, active: bool, c: &Colors) -> Ident {
     let (bg, border, fg) = if active {
         (c.accent.alpha(0.18), c.accent.alpha(0.6), c.foreground)
     } else {
         (transparent_black(), c.border, c.muted)
     };
     let hover_bg = if active { bg } else { c.surface };
-    div()
-        .id(key)
+    ident(key)
         .h(px(28.))
         .px(px(10.))
         .flex()
@@ -106,10 +114,9 @@ pub fn chip(key: impl Into<ElementId>, text: impl Into<SharedString>, active: bo
 }
 
 /// A square icon button with a glyph (panel headers).
-pub fn glyph_button(key: impl Into<ElementId>, glyph: &'static str, tip: &'static str, c: &Colors) -> Stateful<Div> {
+pub fn glyph_button(key: impl Into<ElementId>, glyph: &'static str, tip: &'static str, c: &Colors) -> Ident {
     let hover = c.raised;
-    div()
-        .id(key)
+    ident(key)
         .size(px(28.))
         .flex()
         .items_center()
@@ -124,14 +131,13 @@ pub fn glyph_button(key: impl Into<ElementId>, glyph: &'static str, tip: &'stati
 }
 
 /// A text button; `primary` fills it with the accent.
-pub fn button(key: impl Into<ElementId>, text: impl Into<SharedString>, primary: bool, enabled: bool, c: &Colors) -> Stateful<Div> {
+pub fn button(key: impl Into<ElementId>, text: impl Into<SharedString>, primary: bool, enabled: bool, c: &Colors) -> Ident {
     let (bg, hover, fg) = if primary {
         (c.accent, c.accent.opacity(0.88), c.accent_foreground)
     } else {
         (c.raised.alpha(0.6), c.raised, c.foreground)
     };
-    div()
-        .id(key)
+    ident(key)
         .h(px(30.))
         .px(px(12.))
         .flex()
@@ -149,10 +155,9 @@ pub fn button(key: impl Into<ElementId>, text: impl Into<SharedString>, primary:
 }
 
 /// A muted text link that brightens on hover ("Edit", "Copy").
-pub fn text_link(key: impl Into<ElementId>, text: impl Into<SharedString>, c: &Colors) -> Stateful<Div> {
+pub fn text_link(key: impl Into<ElementId>, text: impl Into<SharedString>, c: &Colors) -> Ident {
     let hover = c.foreground;
-    div()
-        .id(key)
+    ident(key)
         .text_size(px(12.))
         .text_color(c.muted)
         .cursor_pointer()
@@ -219,8 +224,7 @@ impl PopupMenu {
             let action = item.action.clone();
             let close = close.clone();
             let hover = c.surface;
-            div()
-                .id(id("menu-item", ix))
+            ident(id("menu-item", ix))
                 .h(px(30.))
                 .px(px(10.))
                 .flex()
@@ -243,8 +247,7 @@ impl PopupMenu {
                 .child(item.label.clone())
                 .into_any_element()
         });
-        let menu = div()
-            .id("popup-menu")
+        let menu = ident("popup-menu")
             .occlude()
             .min_w(px(180.))
             .p(px(4.))
@@ -267,9 +270,8 @@ impl PopupMenu {
 }
 
 /// A dialog's frame: the window dimmed, the content in a centered card.
-pub fn modal(key: &'static str, width: f32, content: impl IntoElement, c: &Colors) -> Stateful<Div> {
-    div()
-        .id(key)
+pub fn modal(key: &'static str, width: f32, content: impl IntoElement, c: &Colors) -> Ident {
+    ident(key)
         .absolute()
         .inset_0()
         .occlude()
@@ -279,8 +281,7 @@ pub fn modal(key: &'static str, width: f32, content: impl IntoElement, c: &Color
         .justify_center()
         .p(px(20.))
         .child(
-            div()
-                .id(SharedString::from(format!("{key}-card")))
+            ident(SharedString::from(format!("{key}-card")))
                 .w(px(width))
                 .max_w_full()
                 .max_h_full()

@@ -6,7 +6,7 @@ use gpui_kit::*;
 
 use super::state::{AppState, Row, Todo};
 use super::theme::{Colors, colors};
-use super::widgets::{self, id, mono};
+use super::widgets::{self, ident, id, mono};
 
 /// Each kind of tool gets its own colour, so a run of calls reads at a glance.
 pub fn tint(name: &str, c: &Colors) -> Hsla {
@@ -95,8 +95,7 @@ pub fn render(ix: usize, row: &Row, state: &Entity<AppState>, cx: &App) -> AnyEl
     });
     let hover_bg = tint.alpha(0.16);
     let toggle_state = state.clone();
-    let chip = div()
-        .id(id("tool-chip", row.id))
+    let chip = ident(id("tool-chip", row.id))
         .h(px(30.))
         .px(px(10.))
         .max_w_full()
@@ -156,8 +155,7 @@ pub fn render(ix: usize, row: &Row, state: &Entity<AppState>, cx: &App) -> AnyEl
         if !row.result.is_empty() {
             sections.push(section("Result", div().child(row.result.clone()).into_any_element(), tint, cx).into_any_element());
         }
-        div()
-            .id(id("tool-body", row.id))
+        ident(id("tool-body", row.id))
             .w_full()
             .max_h(px(520.))
             .overflow_y_scroll()

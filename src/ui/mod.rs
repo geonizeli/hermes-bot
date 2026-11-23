@@ -13,3 +13,6 @@ pub mod state;
 pub mod theme;
 pub mod tool_card;
 pub mod widgets;
+
+#[cfg(test)]
+mod tests;

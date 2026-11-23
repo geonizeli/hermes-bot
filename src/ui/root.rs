@@ -11,14 +11,14 @@ use super::dialogs::{ConfirmModel, RequestDialog, SetupDialog, render_confirm};
 use super::edit_bot::EditBotDialog;
 use super::state::{AppEvent, AppState};
 use super::theme::colors;
-use super::widgets::{self, Action, MenuItem, PopupMenu, id};
+use super::widgets::{self, ident, Action, MenuItem, PopupMenu, id};
 
 pub struct RootView {
-    state: Entity<AppState>,
-    chat: Entity<ChatView>,
-    setup: Entity<SetupDialog>,
-    request: Entity<RequestDialog>,
-    edit: Entity<EditBotDialog>,
+    pub(crate) state: Entity<AppState>,
+    pub(crate) chat: Entity<ChatView>,
+    pub(crate) setup: Entity<SetupDialog>,
+    pub(crate) request: Entity<RequestDialog>,
+    pub(crate) edit: Entity<EditBotDialog>,
     confirm: Option<ConfirmModel>,
     menu: Option<PopupMenu>,
     title: String,
@@ -28,6 +28,10 @@ pub struct RootView {
 impl RootView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let state = cx.new(AppState::new);
+        Self::with_state(state, window, cx)
+    }
+
+    pub fn with_state(state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let setup = cx.new(|cx| SetupDialog::new(state.clone(), window, cx));
         let request = cx.new(|cx| RequestDialog::new(state.clone(), window, cx));
         let edit = cx.new(|cx| EditBotDialog::new(state.clone(), window, cx));
@@ -91,8 +95,7 @@ impl RootView {
                 let state = self.state.clone();
                 let edit = self.edit.clone();
                 let hover = c.raised.alpha(0.5);
-                div()
-                    .id(id("bot", &bot.name))
+                ident(id("bot", &bot.name))
                     .relative()
                     .h(px(60.))
                     .mx(px(8.))
@@ -181,8 +184,7 @@ impl RootView {
                     .child("BOTS"),
             )
             .child(
-                div()
-                    .id("bot-list")
+                ident("bot-list")
                     .flex_1()
                     .overflow_y_scroll()
                     .flex()
@@ -192,8 +194,7 @@ impl RootView {
                     .when(empty, |d| d.child(widgets::muted("No bots on this server", 14., &c).pt(px(40.)).text_center())),
             )
             .child(
-                div()
-                    .id("server-switcher")
+                ident("server-switcher")
                     .h(px(56.))
                     .flex_none()
                     .border_t_1()
@@ -288,8 +289,7 @@ impl Render for RootView {
             )
         });
         let sidebar = self.render_sidebar(cx).into_any_element();
-        div()
-            .id("root")
+        ident("root")
             .relative()
             .size_full()
             .flex()
