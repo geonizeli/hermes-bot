@@ -52,7 +52,7 @@ runs on any Linux desktop and keeps Omarchy's theme as an option.
 | Bots | Bot picker for the server's profiles, showing avatar, display name and description. The last bot used is remembered. Edit profile (right-click a bot, or click its name in the header): title, description and avatar (classic shapes, blobatar faces, colors, upload, generate, petdex pet), as the official desktop's dialog minus Advanced. |
 | Sidebar | Grok-style: new chat, search, history grouped by Today, Yesterday, Previous 7 days and Older, plus rename, delete and pin. Collapsible. |
 | Empty state | Centered greeting and one large rounded composer. |
-| Conversation | User turns in bubbles on the right; assistant turns full width as Markdown with code blocks. Streaming with a typing cursor. A collapsible "Thought for N s" block for reasoning. Compact tool-call chips that expand to show args and result. Copy and regenerate under each answer. |
+| Conversation | User turns in bubbles on the right; assistant turns full width as Markdown with code blocks. Streaming with a typing cursor. A collapsible "Thought for N s" block for reasoning. Compact tool-call chips that expand to show args and result. Copy and regenerate under each answer. All chat text (your messages, answers, reasoning, code, tool output) is selectable across messages; Ctrl+C copies, and links still open on a click. **Edit** on any of your messages opens it in place; sending replaces it and everything after it (`prompt.submit` with `truncate_before_row_id` + `confirm_truncate`, `confirm_deep_truncate` when later messages go, `confirm_empty_truncate` for the first), keeps its attachments (`image.attach` by server path, `@file:` refs), and rebinds the kept rows' ids from `survivor_row_id_map`. |
 | Composer | Multi-line input; Enter sends and Shift+Enter adds a newline. Model picker and reasoning-effort pill. Attach images and files through the xdg portal (zenity or kdialog without one) or by dropping and pasting. Stop button while streaming. While the bot answers, Enter steers it and **Queue** sends after it: queued messages wait in a panel above the message box (edit, remove, steer now, send now), go out in order with `prompt.submit {queued: true}` as each answer ends (also for bots whose chat isn't open), and pause after a stop, failure or lost connection until resumed. Kept in memory. |
 | Slash commands | The chat's command set comes from the server (`commands.catalog` per session: commands, aliases, subcommands, skills, and which ones a desktop client may use). A menu above the composer filters it as you type `/` (↑↓, Tab or Enter to complete, Esc to close). Commands run on the server (`slash.exec`, then `command.dispatch`); output shows as a monospace card, skills send their message while the bubble shows the invocation. Handled here: `/stop`, `/steer` while answering, `/model` (picker), `/reasoning <level>`, `/help`, `/skin` (theme), `/queue`, and `/compress` — which `/new`, `/reset` and `/clear` map to, as in the official Bot Mode. The official desktop's other client actions (`/branch`, `/title`…) say they aren't available. |
 | Agent requests | Approval cards (once / session / always / deny) and clarify questions rendered inline. |
@@ -89,7 +89,7 @@ src/backend/            plain Rust, no UI, unit-tested
   face/, botedit.rs     bot avatars and the Edit Bot logic
 src/ui/                 GPUI views
   state/                AppState: connection, roster, transcript model,
-                        commands, editor
+                        commands, editor, message edits, queue
   queue.rs              tokio -> UI thread hand-off
   theme.rs              theme state and palette as globals; syncs the
                         component theme
@@ -97,6 +97,7 @@ src/ui/                 GPUI views
   chat.rs               header, conversation list, side panel, file drops
   composer.rs           message box, command menu, model/effort pickers
   markdown_view.rs      answer blocks, images, copy buttons
+  selectable.rs         selectable rich text (window-wide selection, links)
   tool_card.rs          tool call chips and to-do lists
   side_panel.rs         scheduled jobs and screen controls
   screen.rs             live screen view and input forwarding

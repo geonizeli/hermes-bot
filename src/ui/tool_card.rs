@@ -4,7 +4,9 @@
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use super::markdown_view;
 use super::motion;
+use super::selectable::RichText;
 use super::state::{AppState, Row, Todo};
 use super::theme::{Colors, colors};
 use super::widgets::{self, ident, id, mono};
@@ -54,7 +56,7 @@ pub fn todo_list(todos: &[Todo], c: &Colors) -> impl IntoElement {
 }
 
 /// A unified diff with added lines green and removed lines red.
-fn diff_text(text: &str, c: &Colors) -> StyledText {
+fn diff_text(key: ElementId, order: u64, text: &str, c: &Colors) -> RichText {
     let mut highlights = Vec::new();
     let mut offset = 0;
     for line in text.split_inclusive('\n') {
@@ -74,7 +76,7 @@ fn diff_text(text: &str, c: &Colors) -> StyledText {
         }
         offset += line.len();
     }
-    StyledText::new(SharedString::from(text.to_string())).with_highlights(highlights)
+    RichText::new(key, text.to_string(), markdown_view::selection_color(c)).order(order).styled(|t| t.with_highlights(highlights))
 }
 
 fn section(title: &'static str, body: AnyElement, heading: Hsla, cx: &App) -> impl IntoElement {
@@ -148,18 +150,19 @@ pub fn render(ix: usize, row: &Row, state: &Entity<AppState>, cx: &App) -> AnyEl
         });
 
     let body = (row.expanded && has_body).then(|| {
+        let order = super::chat::reading_order(row.id);
         let mut sections = Vec::new();
         if !row.error.is_empty() {
-            sections.push(section("Error", div().text_color(c.danger).child(row.error.clone()).into_any_element(), c.danger, cx).into_any_element());
+            sections.push(section("Error", div().text_color(c.danger).child(markdown_view::plain_text(id("tool-error", row.id), order, row.error.clone(), cx)).into_any_element(), c.danger, cx).into_any_element());
         }
         if !row.args.is_empty() {
-            sections.push(section("Arguments", div().child(row.args.clone()).into_any_element(), tint, cx).into_any_element());
+            sections.push(section("Arguments", markdown_view::plain_text(id("tool-args", row.id), order + 1, row.args.clone(), cx), tint, cx).into_any_element());
         }
         if !row.diff.is_empty() {
-            sections.push(section("Changes", diff_text(&row.diff, &c).into_any_element(), tint, cx).into_any_element());
+            sections.push(section("Changes", diff_text(id("tool-diff", row.id), order + 2, &row.diff, &c).into_any_element(), tint, cx).into_any_element());
         }
         if !row.result.is_empty() {
-            sections.push(section("Result", div().child(row.result.clone()).into_any_element(), tint, cx).into_any_element());
+            sections.push(section("Result", markdown_view::plain_text(id("tool-result", row.id), order + 3, row.result.clone(), cx), tint, cx).into_any_element());
         }
         let body = ident(id("tool-body", row.id))
             .w_full()

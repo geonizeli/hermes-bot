@@ -12,6 +12,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::motion;
+use super::selectable::RichText;
 use super::state::{AppState, MediaState};
 use super::theme::{Colors, colors, hex};
 use super::widgets::{self, ident, id, mono};
@@ -73,32 +74,43 @@ fn open_link(link: &str, state: &Entity<AppState>, cx: &mut App) {
     }
 }
 
-/// Styled text, clickable where it links.
-pub fn styled_text(key: ElementId, para_text: &str, spans: &[Span], state: &Entity<AppState>, cx: &App) -> AnyElement {
+/// Styled text you can select, clickable where it links. `order` places it
+/// in reading order (see `selectable::RichText::order`).
+pub fn styled_text(key: ElementId, order: u64, para_text: &str, spans: &[Span], state: &Entity<AppState>, cx: &App) -> AnyElement {
     let c = colors(cx);
     let code_font = mono(cx);
     let overrides: Vec<_> = spans.iter().filter(|s| s.code).map(|s| (s.range.clone(), code_font.clone())).collect();
-    let styled = StyledText::new(SharedString::from(para_text.to_string()))
-        .with_highlights(highlights(spans, c))
-        .with_font_family_overrides(overrides);
+    let highlights = highlights(spans, c);
+    let text = RichText::new(key, para_text.to_string(), selection_color(c))
+        .order(order)
+        .styled(|t| t.with_highlights(highlights).with_font_family_overrides(overrides));
     let links: Vec<(std::ops::Range<usize>, String)> =
         spans.iter().filter_map(|s| s.link.clone().map(|l| (s.range.clone(), l))).collect();
     if links.is_empty() {
-        return styled.into_any_element();
+        return text.into_any_element();
     }
     let ranges = links.iter().map(|(r, _)| r.clone()).collect();
     let targets: Vec<String> = links.into_iter().map(|(_, l)| l).collect();
     let state = state.clone();
-    InteractiveText::new(key, styled)
-        .on_click(ranges, move |ix, _, cx| {
-            if let Some(link) = targets.get(ix) {
-                open_link(link, &state, cx);
-            }
-        })
-        .into_any_element()
+    text.links(ranges, move |ix, _, cx| {
+        if let Some(link) = targets.get(ix) {
+            open_link(link, &state, cx);
+        }
+    })
+    .into_any_element()
 }
 
-fn paragraph(key: String, para: &Para, state: &Entity<AppState>, cx: &App) -> AnyElement {
+/// Selected text's background.
+pub fn selection_color(c: &Colors) -> Hsla {
+    c.accent.alpha(0.3)
+}
+
+/// Plain text you can select.
+pub fn plain_text(key: ElementId, order: u64, text: impl Into<SharedString>, cx: &App) -> AnyElement {
+    RichText::new(key, text, selection_color(colors(cx))).order(order).into_any_element()
+}
+
+fn paragraph(key: String, order: u64, para: &Para, state: &Entity<AppState>, cx: &App) -> AnyElement {
     let c = colors(cx);
     let (size, top) = match para.kind {
         ParaKind::Heading(1) => (22., 10.),
@@ -107,7 +119,7 @@ fn paragraph(key: String, para: &Para, state: &Entity<AppState>, cx: &App) -> An
         ParaKind::Heading(_) => (15., 6.),
         _ => (15., 0.),
     };
-    let text = styled_text(id("para", &key), &para.text, &para.spans, state, cx);
+    let text = styled_text(id("para", &key), order, &para.text, &para.spans, state, cx);
     div()
         .flex()
         .gap(px(8.))
@@ -145,7 +157,7 @@ pub fn copy_link(key: ElementId, text: String, window: &mut Window, cx: &mut App
         .into_any_element()
 }
 
-fn code_block(key: String, lang: &str, raw: &str, spans: &[Span], window: &mut Window, cx: &mut App) -> AnyElement {
+fn code_block(key: String, order: u64, lang: &str, raw: &str, spans: &[Span], window: &mut Window, cx: &mut App) -> AnyElement {
     let c = colors(cx).clone();
     let font = mono(cx);
     let header = div()
@@ -161,7 +173,8 @@ fn code_block(key: String, lang: &str, raw: &str, spans: &[Span], window: &mut W
             lang.to_string()
         }))
         .child(copy_link(id("copy-code", &key), raw.to_string(), window, cx));
-    let text = StyledText::new(SharedString::from(raw.to_string())).with_highlights(highlights(spans, &c));
+    let highlights = highlights(spans, &c);
+    let text = RichText::new(id("code", &key), raw.to_string(), selection_color(&c)).order(order).styled(|t| t.with_highlights(highlights));
     div()
         .w_full()
         .flex()
@@ -192,7 +205,7 @@ fn code_block(key: String, lang: &str, raw: &str, spans: &[Span], window: &mut W
         .into_any_element()
 }
 
-fn table(key: String, rows: &[Vec<Para>], state: &Entity<AppState>, cx: &App) -> AnyElement {
+fn table(key: String, order: u64, rows: &[Vec<Para>], state: &Entity<AppState>, cx: &App) -> AnyElement {
     let c = colors(cx);
     let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
     let body = rows.iter().enumerate().map(|(r, row)| {
@@ -205,7 +218,7 @@ fn table(key: String, rows: &[Vec<Para>], state: &Entity<AppState>, cx: &App) ->
                 .py(px(6.))
                 .when(col > 0, |d| d.border_l_1().border_color(c.border))
                 .text_size(px(14.))
-                .when_some(cell, |d, p| d.child(styled_text(id("cell", format!("{key}-{r}-{col}")), &p.text, &p.spans, state, cx)))
+                .when_some(cell, |d, p| d.child(styled_text(id("cell", format!("{key}-{r}-{col}")), order + (r * 64 + col.min(63)) as u64, &p.text, &p.spans, state, cx)))
         });
         div()
             .flex()
@@ -305,7 +318,7 @@ pub fn remote_image(
         .into_any_element()
 }
 
-fn alert(key: String, kind: &str, paras: &[Para], state: &Entity<AppState>, cx: &App) -> AnyElement {
+fn alert(key: String, order: u64, kind: &str, paras: &[Para], state: &Entity<AppState>, cx: &App) -> AnyElement {
     let c = colors(cx);
     let edge = match kind {
         "note" => c.blue,
@@ -328,27 +341,29 @@ fn alert(key: String, kind: &str, paras: &[Para], state: &Entity<AppState>, cx: 
         .flex_col()
         .gap(px(4.))
         .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(edge).child(title))
-        .children(paras.iter().enumerate().map(|(i, p)| paragraph(format!("{key}-{i}"), p, state, cx)))
+        .children(paras.iter().enumerate().map(|(i, p)| paragraph(format!("{key}-{i}"), order + i as u64, p, state, cx)))
         .into_any_element()
 }
 
 /// The answer `text`, as a column of blocks. `key` keeps element ids
-/// stable across frames.
-pub fn render(key: u64, text: &str, state: &Entity<AppState>, window: &mut Window, cx: &mut App) -> AnyElement {
+/// stable across frames; `order` is where its text starts in reading order
+/// (each block gets 4096 slots after it).
+pub fn render(key: u64, order: u64, text: &str, state: &Entity<AppState>, window: &mut Window, cx: &mut App) -> AnyElement {
     let palette = colors(cx).markdown.clone();
     let blocks = blocks_for(text, &palette);
     let mut children = Vec::with_capacity(blocks.len());
     for (b, block) in blocks.iter().enumerate() {
         let k = format!("{key}-{b}");
+        let order = order + ((b as u64) << 12);
         let el = match block {
             Block::Text(paras) => div()
                 .flex()
                 .flex_col()
                 .gap(px(6.))
-                .children(paras.iter().enumerate().map(|(i, p)| paragraph(format!("{k}-{i}"), p, state, cx)))
+                .children(paras.iter().enumerate().map(|(i, p)| paragraph(format!("{k}-{i}"), order + i as u64, p, state, cx)))
                 .into_any_element(),
-            Block::Code { lang, raw, spans } => code_block(k, lang, raw, spans, window, cx),
-            Block::Table { rows } => table(k, rows, state, cx),
+            Block::Code { lang, raw, spans } => code_block(k, order, lang, raw, spans, window, cx),
+            Block::Table { rows } => table(k, order, rows, state, cx),
             Block::Image { path, url, alt } => {
                 let image = remote_image(id("md-img", &k), path, url, 640., 480., state, cx);
                 let c = colors(cx);
@@ -360,7 +375,7 @@ pub fn render(key: u64, text: &str, state: &Entity<AppState>, window: &mut Windo
                     .when(!alt.is_empty(), |d| d.child(widgets::muted(alt.clone(), 12., c)))
                     .into_any_element()
             }
-            Block::Alert { kind, paras } => alert(k, kind, paras, state, cx),
+            Block::Alert { kind, paras } => alert(k, order, kind, paras, state, cx),
             Block::Rule => div().w_full().h(px(1.)).bg(colors(cx).border).into_any_element(),
         };
         children.push(el);

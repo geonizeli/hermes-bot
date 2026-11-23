@@ -115,7 +115,7 @@ pub struct Row {
 }
 
 impl Row {
-    fn new(id: u64, role: Role) -> Row {
+    pub(super) fn new(id: u64, role: Role) -> Row {
         Row {
             id,
             role,
@@ -243,6 +243,7 @@ impl AppState {
         self.assistant_row = None;
         self.todo_row = None;
         self.last_user_index = None;
+        self.editing = None;
         self.thinking_since = None;
         for v in rows {
             self.next_row += 1;
