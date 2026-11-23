@@ -14,7 +14,7 @@ use super::motion;
 use super::state::{AppEvent, AppState, Provider};
 use super::state::commands::Suggestion;
 use super::theme::colors;
-use super::widgets::{self, ident, MenuItem, PopupMenu, id, mono};
+use super::widgets::{self, ident, MenuItem, PopupMenu, id, id as id_for, mono};
 
 pub struct Composer {
     state: Entity<AppState>,
@@ -106,6 +106,110 @@ impl Composer {
         cx.notify();
     }
 
+    /// Queues the message box to send after the bot's current answer.
+    fn queue(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.text(cx);
+        self.state.update(cx, |s, cx| s.queue_message(&text, cx));
+        self.set_text("", window, cx);
+    }
+
+    /// Takes a queued message back into the message box, after anything
+    /// already typed.
+    fn edit_queued(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(queued) = self.state.update(cx, |s, cx| s.take_queued(id, cx)) else { return };
+        let current = self.text(cx);
+        let text = if current.trim().is_empty() { queued } else { format!("{}\n\n{queued}", current.trim_end()) };
+        self.set_text(&text, window, cx);
+    }
+
+    /// The messages waiting for the bot's answer to end.
+    fn render_queue(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let c = colors(cx).clone();
+        let s = self.state.read(cx);
+        let queue = s.queued()?.clone();
+        let streaming = s.streaming;
+        let count = queue.items.len();
+        let title = format!("{count} queued{}", if queue.parked { " · paused" } else { "" });
+        let header = div()
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .child(div().flex_1().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(c.muted).child(title))
+            .when(queue.parked, |d| {
+                d.child(widgets::text_link("queue-resume", "Resume", &c).on_click(cx.listener(|this, _, _, cx| {
+                    this.state.update(cx, |s, cx| s.resume_queue(cx))
+                })))
+            });
+        let rows = queue.items.iter().map(|message| {
+            let id = message.id;
+            let group = SharedString::from(format!("queued-{id}"));
+            let attachments = message.attachments.len();
+            // While the bot answers a message can go in as a steer; once
+            // it's idle, it can go now.
+            let now = if streaming {
+                message.can_steer().then(|| {
+                    widgets::text_link(id_for("queued-steer", id), "Steer now", &c)
+                        .on_click(cx.listener(move |this, _, _, cx| this.state.update(cx, |s, cx| s.steer_queued(id, cx))))
+                })
+            } else {
+                Some(
+                    widgets::text_link(id_for("queued-send", id), "Send now", &c)
+                        .on_click(cx.listener(move |this, _, _, cx| this.state.update(cx, |s, cx| s.send_queued_now(id, cx)))),
+                )
+            };
+            let row = ident(id_for("queued", id))
+                .group(group.clone())
+                .flex()
+                .items_start()
+                .gap(px(10.))
+                .py(px(4.))
+                .child(div().flex_none().pt(px(1.)).text_size(px(12.)).text_color(c.muted).child("↳"))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .child(div().text_size(px(13.)).line_clamp(2).child(message.preview()))
+                        .when(attachments > 0 && !message.text.trim().is_empty(), |d| {
+                            d.child(widgets::muted(
+                                if attachments == 1 { "1 attachment".to_string() } else { format!("{attachments} attachments") },
+                                11.,
+                                &c,
+                            ))
+                        }),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_none()
+                        .gap(px(12.))
+                        .children(now)
+                        .child(
+                            widgets::text_link(id_for("queued-edit", id), "Edit", &c)
+                                .on_click(cx.listener(move |this, _, window, cx| this.edit_queued(id, window, cx))),
+                        )
+                        .child(
+                            widgets::text_link(id_for("queued-remove", id), "✕", &c)
+                                .on_click(cx.listener(move |this, _, _, cx| this.state.update(cx, |s, cx| s.remove_queued(id, cx)))),
+                        ),
+                );
+            motion::rise_in(row, id_for("queued-in", id), 6., motion::QUICK)
+        });
+        let panel = ident("queue-panel")
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .pb(px(8.))
+            .mb(px(2.))
+            .border_b_1()
+            .border_color(c.border)
+            .child(header)
+            .children(rows);
+        Some(panel.into_any_element())
+    }
+
     pub fn start_edit(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.editing = true;
         self.set_text(text, window, cx);
@@ -166,7 +270,11 @@ impl Composer {
         }
         if streaming {
             // Typing while the bot works steers it; an empty send stops it.
-            if !text.trim().is_empty() {
+            // A steer can't carry attachments, so with any waiting the
+            // message queues for after the answer instead.
+            if pending {
+                self.queue(window, cx);
+            } else if !text.trim().is_empty() {
                 self.state.update(cx, |s, cx| s.steer(&text, cx));
                 self.set_text("", window, cx);
             } else {
@@ -420,10 +528,11 @@ impl Render for Composer {
         let has_text = !text.trim().is_empty();
         let can_send = connected && (has_text || !pending.is_empty());
         let live = streaming || can_send;
-        let stopping = streaming && !has_text;
+        let stopping = streaming && !has_text && pending.is_empty();
         let focused = self.input.focus_handle(cx).is_focused(window);
         let menu_open = self.menu_open(window, cx);
 
+        let queue_panel = self.render_queue(cx);
         let edit_banner = self.editing.then(|| {
             div()
                 .flex()
@@ -561,6 +670,16 @@ impl Render for Composer {
                 })))
             })
             .child(div().flex_1())
+            // While the bot answers, Enter steers; this sends after it instead.
+            .when(streaming && (has_text || !pending.is_empty()), |d| {
+                d.child(
+                    widgets::chip("queue", "Queue", false, &c)
+                        .tooltip(|window, cx| {
+                            gpui_kit::component::tooltip::Tooltip::new("Send after the bot's current answer").build(window, cx)
+                        })
+                        .on_click(cx.listener(|this, _, window, cx| this.queue(window, cx))),
+                )
+            })
             .child(action_button);
 
         let close_effort: widgets::Action = {
@@ -616,6 +735,7 @@ impl Render for Composer {
                     cx.stop_propagation();
                 }
             }))
+            .children(queue_panel)
             .children(edit_banner)
             .children(chips)
             .child(div().w_full().text_color(c.foreground).child(editor))

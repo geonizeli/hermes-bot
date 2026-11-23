@@ -56,6 +56,8 @@ pub enum Local {
     Help,
     /// `/skin [theme]` shows or switches hermes-bot's theme.
     Skin,
+    /// `/queue <message>` sends after the current answer; `/queue` lists.
+    Queue,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -77,7 +79,6 @@ const NOT_HERE: &[(&str, &str)] = &[
     ("/sessions", "A bot has one chat; pick another bot in the sidebar."),
     ("/profile", "Pick another bot in the sidebar."),
     ("/prompt", "Write the prompt in the message box instead."),
-    ("/queue", ""),
     ("/btw", ""),
     ("/bg", ""),
     ("/pet", ""),
@@ -107,6 +108,7 @@ fn local(canonical: &str) -> Option<Local> {
         "/compress" | "/new" | "/clear" => Local::Compress,
         "/help" | "/commands" => Local::Help,
         "/skin" => Local::Skin,
+        "/queue" => Local::Queue,
         _ => return None,
     })
 }
@@ -118,6 +120,7 @@ fn local_description(canonical: &str) -> Option<&'static str> {
         "/stop" => "Stop the bot's answer",
         "/model" => "Pick the model for this chat",
         "/help" => "Show the commands you can use here",
+        "/queue" => "Send a message after the bot's current answer (or list the queue)",
         "/skin" => "Show or switch the app's theme (system, dark, light, omarchy)",
         _ => return None,
     })

@@ -93,6 +93,25 @@ impl AppState {
                 }
             }
             Route::Local(Local::Model) => cx.emit(AppEvent::OpenModelPicker),
+            Route::Local(Local::Queue) if !arg.is_empty() => {
+                let was_busy = self.streaming;
+                self.queue_message(&arg, cx);
+                if was_busy {
+                    let count = self.queued().map(|q| q.items.len()).unwrap_or(0);
+                    self.say(&typed, &format!("Queued ({count} waiting). It goes out when the bot finishes."));
+                }
+            }
+            Route::Local(Local::Queue) => {
+                let text = match self.queued() {
+                    None => "Nothing is queued. /queue <message> sends one after the bot's current answer.".to_string(),
+                    Some(q) => {
+                        let lines: Vec<String> = q.items.iter().enumerate().map(|(i, m)| format!("{}. {}", i + 1, m.preview())).collect();
+                        let head = if q.parked { "Queued (paused, resume it above the message box):" } else { "Queued:" };
+                        format!("{head}\n{}", lines.join("\n"))
+                    }
+                };
+                self.say(&typed, &text);
+            }
             Route::Local(Local::Skin) => {
                 let theme = super::super::theme::theme_state(cx).clone();
                 let names: Vec<&str> = theme.choices().iter().map(|c| c.key()).collect();
