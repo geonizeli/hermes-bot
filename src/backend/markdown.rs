@@ -1,6 +1,6 @@
 //! Bot answers as display blocks: Markdown parsed in Rust (pulldown-cmark),
 //! code highlighted (syntect), and prose turned into paragraphs of styled
-//! spans, coloured with the Omarchy theme.
+//! spans, coloured with the app's theme.
 //!
 //! The UI draws each block on its own: paragraphs as styled text, code with a
 //! header and a copy button, tables as a grid, images fetched from the
@@ -116,7 +116,7 @@ fn parse_color(hex: &str) -> Color {
     Color { r: channel(1), g: channel(3), b: channel(5), a: 0xff }
 }
 
-/// A syntax theme made from the Omarchy palette, so code takes the same
+/// A syntax theme made from the app's palette, so code takes the same
 /// colours as the terminal. Built once per palette.
 fn code_theme(c: &Colors) -> Arc<Theme> {
     static THEMES: OnceLock<Mutex<HashMap<String, Arc<Theme>>>> = OnceLock::new();
