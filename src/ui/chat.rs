@@ -24,7 +24,6 @@ use super::widgets::{self, ident, accent_surface, id, mono};
 pub const SIDEBAR_WIDTH: f32 = 280.;
 const HEADER_HEIGHT: f32 = 56.;
 const PANEL_WIDTH: f32 = 320.;
-const COLUMN_MAX: f32 = 780.;
 
 pub struct ChatView {
     state: Entity<AppState>,
@@ -291,7 +290,6 @@ impl ChatView {
             .child(
                 div()
                     .w_full()
-                    .max_w(px(COLUMN_MAX))
                     .flex()
                     .flex_col()
                     .items_center()
@@ -602,7 +600,6 @@ fn loading_transcript(cx: &App) -> impl IntoElement {
         .child(
             div()
                 .w_full()
-                .max_w(px(COLUMN_MAX))
                 .flex()
                 .flex_col()
                 .gap(px(28.))
@@ -635,7 +632,6 @@ fn render_row(ix: usize, rows: &RowContext, window: &mut Window, cx: &mut App) -
     let lift = if row.role == Role::User { 14. } else { 8. };
     let column = div()
         .w_full()
-        .max_w(px(COLUMN_MAX))
         .flex()
         .flex_col()
         .child(content)
@@ -721,7 +717,6 @@ impl Render for ChatView {
             let bar = div().w_full().px(px(24.)).pb(px(8.)).flex().justify_center().child(
                 div()
                     .w_full()
-                    .max_w(px(COLUMN_MAX))
                     .pl(px(14.))
                     .pr(px(10.))
                     .py(px(10.))
@@ -752,7 +747,7 @@ impl Render for ChatView {
                 .pb(px(20.))
                 .flex()
                 .justify_center()
-                .child(div().w_full().max_w(px(COLUMN_MAX)).child(self.composer.clone()))
+                .child(div().w_full().child(self.composer.clone()))
         });
 
         let chat_area = div()
