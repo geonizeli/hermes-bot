@@ -1,5 +1,5 @@
 //! Files that live on the server (images in the transcript, images the bot
-//! made), fetched over REST and cached on disk so QML can show them.
+//! made), fetched over REST and cached on disk so the UI can show them.
 
 use std::path::PathBuf;
 
@@ -103,7 +103,7 @@ pub fn cached_avatar(server: &str, profile: &str) -> Option<PathBuf> {
 }
 
 /// Saves a bot's avatar (a data URL from `profiles.get_asset`). The file name
-/// carries a hash of the image, so a new avatar gets a new URL and Qt's image
+/// carries a hash of the image, so a new avatar gets a new path and the image
 /// cache can't show the old one; older copies are removed.
 pub fn store_avatar(server: &str, profile: &str, data_url: &str) -> Option<PathBuf> {
     let (mime, bytes) = decode_data_url(data_url)?;

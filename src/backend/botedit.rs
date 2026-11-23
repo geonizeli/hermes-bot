@@ -89,31 +89,6 @@ pub struct Look {
     pub description: String,
 }
 
-impl Look {
-    pub fn from_json(v: &Value) -> Look {
-        let text = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
-        let path = |s: String| {
-            let s = s.strip_prefix("file://").map(str::to_string).unwrap_or(s);
-            (!s.is_empty()).then(|| PathBuf::from(url_decode(&s)))
-        };
-        Look {
-            shape: text("shape"),
-            color: Some(text("color")).filter(|c| !c.is_empty()),
-            image: path(text("image")),
-            title: text("title"),
-            description: text("description"),
-        }
-    }
-}
-
-fn url_decode(s: &str) -> String {
-    url::Url::parse(&format!("file://{s}"))
-        .ok()
-        .and_then(|u| u.to_file_path().ok())
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| s.to_string())
-}
-
 /// The look the dialog opens with for a roster row and its cached avatar.
 pub fn opening_look(row: &Value, avatar: Option<&Path>) -> Look {
     let name = row.get("name").and_then(Value::as_str).unwrap_or("default");
@@ -382,13 +357,6 @@ mod tests {
         assert_eq!(avatar_change(&face, &look("pill", None, None, "")), AvatarChange::Face);
         // A new color under a picture changes nothing the server shows.
         assert_eq!(avatar_change(&photo, &look("circle", Some("#fff"), Some("/a.png"), "")), AvatarChange::Keep);
-    }
-
-    #[test]
-    fn reads_dialog_json() {
-        let l = Look::from_json(&json!({ "shape": "pill", "color": "", "image": "file:///tmp/a%20b.png", "title": "T" }));
-        assert_eq!(l.color, None);
-        assert_eq!(l.image, Some(PathBuf::from("/tmp/a b.png")));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! Omarchy theme and Hyprland rounding, read without Qt so it can be tested.
+//! Omarchy theme and Hyprland rounding, read apart from the UI so it can be tested.
 //!
 //! The palette comes from `~/.local/state/omarchy/current/theme/colors.toml`.
 //! A theme switch replaces files and directories under `current`, so the

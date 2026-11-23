@@ -9,11 +9,12 @@ as close as possible to the Grok chat experience.
 - **Purpose:** talk to Hermes bots. Nothing else (no config, cron, kanban or
   log screens from the web dashboard).
 - **Fully native** client; no embedded web view. **Rust wherever possible**:
-  a Rust core with a Qt Quick (QML) UI.
+  a Rust core with a [GPUI](https://gpui.rs) UI (through gpui-kit, which adds
+  styled inputs, scrollbars and tooltips on top of GPUI).
 - **Connections:** remote servers over HTTPS, signing in with OAuth or a
   password. The app keeps its own list and does not read Hermes' files.
-- **Look and feel:** default Qt Quick Controls styling for now; function first.
-  The Grok-like look comes later, once everything works.
+- **Look and feel:** function first, then the Grok-like look on the live
+  Omarchy palette.
 - **Setup:** Omarchy on Hyprland, one 4K display at 1.33× scale. Built the
   way Omarchy's own apps are (see the omarchy-app conventions): one binary,
   live theme accent and window rounding, installed as a
@@ -58,44 +59,53 @@ voice, custom keyboard shortcuts (revisit later).
 
 ## Architecture
 
-Rust owns all logic; QML owns layout and interaction. They are bridged with
-[cxx-qt](https://github.com/KDAB/cxx-qt): Rust `QObject`s expose properties,
-signals and invokables to QML, and Qt's event loop drives the UI while a
-tokio runtime runs the network work and posts results back to the Qt thread.
+Everything is Rust. GPUI draws the window; `ui::state::AppState` is one
+entity holding the app's state and actions, and the views read it and call
+its methods. Network work runs on a tokio runtime; when it's done it queues a
+closure back onto the UI thread (`ui::queue::Queue`), which runs with the
+entity and its context. One-off happenings (a probed server, a question from
+the bot) reach the views as `AppEvent`s.
 
 ```text
 Cargo.toml              one crate, binary `hermes-bot`
-build.rs                cxx-qt-build: bridges, QML module, i18n resources
-src/main.rs             app setup: QGuiApplication, Material style, desktop file name
-src/bridge/             cxx-qt QObjects handed to QML
-  app.rs                servers, active server and bot, sign-in state, errors
-  sessions.rs           sidebar history list model
-  chat.rs               conversation list model; applies streaming events
-  bots.rs               profiles of the active server
-  theme.rs              Omarchy accent + Hyprland rounding, watched live
-  translator.rs         Omarchy language, JSON catalogs, plural rules
-src/core/               plain Rust, no Qt, unit-tested
-  store.rs              servers.json (atomic writes) + keyring tokens
+src/main.rs             app setup: window, app_id (matches hermes-bot.desktop)
+src/backend/            plain Rust, no UI, unit-tested
+  store.rs              servers.json (atomic writes, UI prefs) + keyring tokens
   auth.rs               discovery, PKCE loopback flow, password broker flow, refresh
-  gateway.rs            WebSocket JSON-RPC: tickets, requests, events, heartbeat, replay
-  protocol.rs           serde types for the methods and events we use
-  transcript.rs         event stream -> turns (text, reasoning, tools) state machine
-qml/                    Main, Sidebar, ChatView, MessageBubble, Composer,
-                        ToolChip, ReasoningBlock, ApprovalCard, BotPicker,
-                        ServerDialog
-i18n/<code>.json        catalogs compiled into the binary
+  gateway.rs            WebSocket JSON-RPC: requests, events, server requests
+  botchat.rs            each bot's hidden "Bot Chat" session
+  history.rs            REST transcript -> conversation rows
+  markdown.rs           Markdown -> styled paragraphs, code spans, tables, alerts
+  slash.rs              server-driven slash commands (commands.catalog)
+  rfb.rs                VNC client for a bot's screen
+  theme.rs              Omarchy palette + Hyprland rounding, watched live
+  face/, botedit.rs     bot avatars and the Edit Bot logic
+src/ui/                 GPUI views
+  state/                AppState: connection, roster, transcript model,
+                        commands, editor
+  queue.rs              tokio -> UI thread hand-off
+  theme.rs              palette as a global; syncs the component theme
+  root.rs               window: sidebar, menus, dialogs
+  chat.rs               header, conversation list, side panel, file drops
+  composer.rs           message box, command menu, model/effort pickers
+  markdown_view.rs      answer blocks, images, copy buttons
+  tool_card.rs          tool call chips and to-do lists
+  side_panel.rs         scheduled jobs and screen controls
+  screen.rs             live screen view and input forwarding
+  dialogs.rs            servers, bot questions, expensive-model confirmation
+  edit_bot.rs           Edit Bot dialog and pet picker
 bin/build bin/test bin/install
 pkgbuild/PKGBUILD .desktop .svg
 ```
 
-Crates: `cxx-qt`/`cxx-qt-lib`, `tokio`, `reqwest` (rustls), `tokio-tungstenite`,
+Crates: `gpui-kit` (GPUI), `tokio`, `reqwest` (rustls), `tokio-tungstenite`,
 `serde`/`serde_json`, `keyring` (Secret Service), `sha2`/`base64`/`rand` for
-PKCE, `notify` for the theme and language watchers, `open` for the system
-browser. Tests: `cargo test` for `core/` against an in-process fake Hermes
-server (HTTP + WebSocket), plus an offscreen QML harness for the UI.
+PKCE, `notify` for the theme watchers, `open` for the system browser,
+`pulldown-cmark` + `syntect` for answers, `chrono` for local times. File
+dialogs go through the xdg-desktop-portal (`ashpd` crate). Tests: `cargo test`.
 
-Qt modules: core, gui, qml, quick, quickcontrols2, svg, wayland. File dialogs
-go through the xdg-desktop-portal (`ashpd` crate).
+The app was first built with Qt Quick through cxx-qt and moved to GPUI in
+November 2026; the milestones below date from then.
 
 ## Milestones (one commit or more each)
 

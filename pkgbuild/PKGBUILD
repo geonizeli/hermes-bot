@@ -4,10 +4,9 @@ pkgrel=1
 pkgdesc='Chat with Hermes bots on remote Hermes servers'
 arch=('x86_64' 'aarch64')
 license=('MIT')
-depends=('qt6-base' 'qt6-declarative' 'qt6-wayland' 'qt6-svg' 'xdg-desktop-portal')
-makedepends=('rust' 'cargo' 'gcc' 'make')
-# GCC LTO turns cxx-qt's C++ bridge objects into bitcode that Rust's linker
-# (lld) can't read, leaving every Qt symbol undefined.
+depends=('vulkan-icd-loader' 'libxkbcommon' 'libxkbcommon-x11' 'libxcb' 'wayland' 'fontconfig' 'freetype2' 'xdg-desktop-portal')
+makedepends=('rust' 'cargo' 'gcc')
+# makepkg's LTO flags are for C/C++; cargo does its own optimizing.
 options=('!lto')
 source=()
 sha256sums=()

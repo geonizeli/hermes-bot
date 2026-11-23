@@ -18,7 +18,7 @@ pub mod theme;
 use std::sync::OnceLock;
 
 /// One tokio runtime for all network work. Results are posted back to the
-/// Qt thread through each QObject's `qt_thread()`.
+/// UI thread through each entity's `ui::queue::Queue`.
 pub fn runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RUNTIME.get_or_init(|| {

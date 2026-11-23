@@ -2,7 +2,7 @@
 //! transcript (`/api/sessions/{id}/messages`), which, unlike the chat
 //! socket's history, includes each tool's result.
 //!
-//! Every row carries the same keys (QML's ListModel wants one schema):
+//! Every row carries the same keys:
 //! role, text, reasoning, attachments (JSON), toolId, name, detail, args,
 //! result, diff, todos (JSON), duration, error, timestamp.
 

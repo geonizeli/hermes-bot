@@ -2,7 +2,7 @@
 //!
 //! Hermes streams each bot's Xvnc desktop as raw RFB 3.8 bytes over
 //! `/api/display/ws` with security type None. We ask for 32-bit true colour
-//! laid out like `QImage::Format_RGB32` and accept ZRLE, CopyRect and Raw,
+//! laid out as `0xffRRGGBB` (BGRA bytes in memory) and accept ZRLE, CopyRect and Raw,
 //! plus the DesktopSize pseudo-encoding. Input is only forwarded by the
 //! server while this viewer holds the human control lease.
 
@@ -64,7 +64,6 @@ pub type SharedFrame = Arc<Mutex<Frame>>;
 pub enum Input {
     Pointer { mask: u8, x: u16, y: u16 },
     Key { down: bool, keysym: u32 },
-    Paste(String),
 }
 
 #[derive(Debug, Clone)]
@@ -189,14 +188,6 @@ pub fn encode_input(input: &Input) -> Vec<u8> {
         Input::Key { down, keysym } => {
             let mut m = vec![4, *down as u8, 0, 0];
             m.extend_from_slice(&keysym.to_be_bytes());
-            m
-        }
-        Input::Paste(text) => {
-            // ClientCutText is Latin-1; anything else becomes '?'.
-            let latin1: Vec<u8> = text.chars().map(|c| if (c as u32) < 256 { c as u8 } else { b'?' }).collect();
-            let mut m = vec![6, 0, 0, 0];
-            m.extend_from_slice(&(latin1.len() as u32).to_be_bytes());
-            m.extend_from_slice(&latin1);
             m
         }
     }
@@ -550,55 +541,53 @@ fn decode_tile(c: &mut Cursor, sub: u8, ox: u32, oy: u32, tw: u32, th: u32, fram
     Ok(())
 }
 
-/// X11 keysym for a Qt key code and its text.
-pub fn keysym(qt_key: i32, text: &str) -> Option<u32> {
-    let special = match qt_key {
-        0x0100_0000 => 0xff1b, // Escape
-        0x0100_0001 => 0xff09, // Tab
-        0x0100_0002 => 0xfe20, // Backtab
-        0x0100_0003 => 0xff08, // Backspace
-        0x0100_0004 => 0xff0d, // Return
-        0x0100_0005 => 0xff8d, // Enter (keypad)
-        0x0100_0006 => 0xff63, // Insert
-        0x0100_0007 => 0xffff, // Delete
-        0x0100_0008 => 0xff13, // Pause
-        0x0100_0009 => 0xff61, // Print
-        0x0100_0010 => 0xff50, // Home
-        0x0100_0011 => 0xff57, // End
-        0x0100_0012 => 0xff51, // Left
-        0x0100_0013 => 0xff52, // Up
-        0x0100_0014 => 0xff53, // Right
-        0x0100_0015 => 0xff54, // Down
-        0x0100_0016 => 0xff55, // PageUp
-        0x0100_0017 => 0xff56, // PageDown
-        0x0100_0020 => 0xffe1, // Shift
-        0x0100_0021 => 0xffe3, // Control
-        0x0100_0022 => 0xffeb, // Meta (Super)
-        0x0100_0023 => 0xffe9, // Alt
-        0x0100_0024 => 0xffe5, // CapsLock
-        0x0100_0025 => 0xff7f, // NumLock
-        0x0100_0026 => 0xff14, // ScrollLock
-        0x0100_1103 => 0xfe03, // AltGr
-        0x0100_0055 => 0xff67, // Menu
-        k @ 0x0100_0030..=0x0100_0052 => 0xffbe + (k - 0x0100_0030) as u32, // F1..F35
+/// X11 keysym for a key as the windowing layer names it (`"escape"`,
+/// `"f5"`, `"a"`) and the text it types, when it types any.
+pub fn keysym(key: &str, text: Option<&str>) -> Option<u32> {
+    let special = match key {
+        "escape" => 0xff1b,
+        "tab" => 0xff09,
+        "backspace" => 0xff08,
+        "enter" => 0xff0d,
+        "insert" => 0xff63,
+        "delete" => 0xffff,
+        "pause" => 0xff13,
+        "printscreen" => 0xff61,
+        "home" => 0xff50,
+        "end" => 0xff57,
+        "left" => 0xff51,
+        "up" => 0xff52,
+        "right" => 0xff53,
+        "down" => 0xff54,
+        "pageup" => 0xff55,
+        "pagedown" => 0xff56,
+        "shift" => 0xffe1,
+        "control" => 0xffe3,
+        "platform" => 0xffeb,
+        "alt" => 0xffe9,
+        "capslock" => 0xffe5,
+        "menu" => 0xff67,
+        "space" => 0x20,
+        k if k.len() > 1 && k.starts_with('f') => match k[1..].parse::<u32>() {
+            Ok(n @ 1..=35) => 0xffbe + n - 1,
+            _ => 0,
+        },
         _ => 0,
     };
     if special != 0 {
         return Some(special);
     }
-    let mut chars = text.chars();
-    if let (Some(ch), None) = (chars.next(), chars.next()) {
-        let cp = ch as u32;
-        if cp >= 0x20 && cp != 0x7f {
-            return Some(if cp < 0x100 { cp } else { 0x0100_0000 + cp });
+    let printable = |s: &str| {
+        let mut chars = s.chars();
+        match (chars.next(), chars.next()) {
+            (Some(ch), None) if (ch as u32) >= 0x20 && ch as u32 != 0x7f => Some(ch as u32),
+            _ => None,
         }
-    }
-    // Ctrl+letter arrives with a control character as text; use the key.
-    if (0x20..0x7f).contains(&qt_key) {
-        let ch = char::from_u32(qt_key as u32)?;
-        return Some(ch.to_ascii_lowercase() as u32);
-    }
-    None
+    };
+    // What the key types (shifted, layout-aware); with Ctrl held there is no
+    // text, so the key itself.
+    let cp = text.and_then(printable).or_else(|| printable(key))?;
+    Some(if cp < 0x100 { cp } else { 0x0100_0000 + cp })
 }
 
 #[cfg(test)]
@@ -723,12 +712,13 @@ mod tests {
 
     #[test]
     fn maps_keys_to_keysyms() {
-        assert_eq!(keysym(0x41, "a"), Some(0x61));
-        assert_eq!(keysym(0x41, "A"), Some(0x41));
-        assert_eq!(keysym(0x0100_0004, "\r"), Some(0xff0d));
-        assert_eq!(keysym(0x0100_0030, ""), Some(0xffbe));
-        assert_eq!(keysym(0x43, "\u{3}"), Some(0x63)); // Ctrl+C
-        assert_eq!(keysym(0x20ac, "€"), Some(0x0100_20ac));
+        assert_eq!(keysym("a", Some("a")), Some(0x61));
+        assert_eq!(keysym("a", Some("A")), Some(0x41));
+        assert_eq!(keysym("enter", None), Some(0xff0d));
+        assert_eq!(keysym("f1", None), Some(0xffbe));
+        assert_eq!(keysym("c", None), Some(0x63));
+        assert_eq!(keysym("e", Some("é")), Some(0xe9));
+        assert_eq!(keysym("e", Some("€")), Some(0x0100_20ac));
     }
 
     /// A fake Xvnc: RFB 3.8 handshake, one Raw update, then close 4001.
