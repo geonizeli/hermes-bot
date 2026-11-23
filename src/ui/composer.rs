@@ -19,8 +19,6 @@ use super::widgets::{self, ident, MenuItem, PopupMenu, id, id as id_for, mono};
 pub struct Composer {
     state: Entity<AppState>,
     pub(crate) input: Entity<TextareaState>,
-    /// Editing your latest message: sending replaces it and what followed.
-    pub(crate) editing: bool,
     suggestions: Vec<Suggestion>,
     suggestion_index: usize,
     menu_dismissed: bool,
@@ -57,10 +55,7 @@ impl Composer {
                 _ => {}
             }),
             cx.subscribe_in(&state, window, |this, _, event: &AppEvent, window, cx| match event {
-                AppEvent::Prefill(text) => {
-                    this.editing = false;
-                    this.set_text(text, window, cx);
-                }
+                AppEvent::Prefill(text) => this.set_text(text, window, cx),
                 AppEvent::OpenModelPicker => this.open_picker(window, cx),
                 AppEvent::TranscriptLoaded => this.focus(window, cx),
                 _ => {}
@@ -70,7 +65,6 @@ impl Composer {
         Composer {
             state,
             input,
-            editing: false,
             suggestions: Vec::new(),
             suggestion_index: 0,
             menu_dismissed: false,
@@ -210,23 +204,13 @@ impl Composer {
         Some(panel.into_any_element())
     }
 
-    pub fn start_edit(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.editing = true;
-        self.set_text(text, window, cx);
-    }
-
-    fn cancel_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.editing = false;
-        self.set_text("", window, cx);
-    }
-
     fn menu_open(&self, window: &Window, cx: &App) -> bool {
         !self.suggestions.is_empty() && !self.menu_dismissed && self.input.focus_handle(cx).is_focused(window)
     }
 
     fn refresh_suggestions(&mut self, cx: &mut Context<Self>) {
         let text = self.text(cx);
-        if self.editing || !text.starts_with('/') {
+        if !text.starts_with('/') {
             self.suggestions.clear();
             return;
         }
@@ -263,7 +247,7 @@ impl Composer {
         // Commands go through send() even while the bot answers (/stop, /usage…).
         let is_command = text.starts_with('/')
             && text[1..].chars().next().is_some_and(|c| !c.is_whitespace() && c != '/');
-        if !self.editing && is_command {
+        if is_command {
             self.state.update(cx, |s, cx| s.send(&text, cx));
             self.set_text("", window, cx);
             return;
@@ -280,15 +264,6 @@ impl Composer {
             } else {
                 self.state.update(cx, |s, cx| s.stop(cx));
             }
-            return;
-        }
-        if self.editing {
-            if text.trim().is_empty() {
-                return;
-            }
-            self.editing = false;
-            self.set_text("", window, cx);
-            self.state.update(cx, |s, cx| s.resend_last(&text, cx));
             return;
         }
         if text.trim().is_empty() && !pending {
@@ -533,22 +508,6 @@ impl Render for Composer {
         let menu_open = self.menu_open(window, cx);
 
         let queue_panel = self.render_queue(cx);
-        let edit_banner = self.editing.then(|| {
-            div()
-                .flex()
-                .items_center()
-                .gap(px(8.))
-                .child(
-                    div()
-                        .flex_1()
-                        .truncate()
-                        .text_size(px(12.))
-                        .text_color(c.accent)
-                        .child("Editing your message. Sending replaces it and the answers after it."),
-                )
-                .child(widgets::text_link("cancel-edit", "Cancel", &c).on_click(cx.listener(|this, _, window, cx| this.cancel_edit(window, cx))))
-        });
-
         let chips = (!pending.is_empty()).then(|| {
             div().flex().flex_wrap().gap(px(6.)).children(pending.iter().map(|(aid, image, name, path)| {
                 let aid = *aid;
@@ -730,13 +689,9 @@ impl Render for Composer {
                     this.menu_dismissed = true;
                     cx.stop_propagation();
                     cx.notify();
-                } else if this.editing {
-                    this.cancel_edit(window, cx);
-                    cx.stop_propagation();
                 }
             }))
             .children(queue_panel)
-            .children(edit_banner)
             .children(chips)
             .child(div().w_full().text_color(c.foreground).child(editor))
             .child(controls)

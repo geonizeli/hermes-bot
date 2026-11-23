@@ -31,6 +31,7 @@ mod chat;
 pub mod queued;
 pub mod commands;
 pub mod editor;
+mod edit;
 
 pub use chat::{FileRef, Role, Row, Todo};
 pub use queued::{MessageQueue, QueuedMessage};
@@ -141,6 +142,8 @@ pub struct AppState {
     /// The latest message you sent: it can be edited, and the answers after
     /// it regenerated.
     pub last_user_index: Option<usize>,
+    /// The message being edited in place (a row id).
+    pub editing: Option<u64>,
     thinking_since: Option<Instant>,
     next_row: u64,
 
@@ -312,6 +315,7 @@ impl AppState {
             assistant_row: None,
             todo_row: None,
             last_user_index: None,
+            editing: None,
             thinking_since: None,
             next_row: 0,
             gateway: None,
@@ -1328,26 +1332,31 @@ impl AppState {
         });
     }
 
-    /// Regenerate or edit: drops your latest message and everything after
-    /// it, then sends `text` in its place.
-    pub fn resend_last(&mut self, text: &str, cx: &mut Context<Self>) {
-        let Some(i) = self.last_user_index else { return };
-        if self.streaming || text.trim().is_empty() {
+    /// Edit or regenerate: replaces your message at row `ix` with `text`,
+    /// dropping it and everything after it here and on the server. The
+    /// message keeps its attachments.
+    pub fn resend_from(&mut self, ix: usize, text: &str, cx: &mut Context<Self>) {
+        let Some(row) = self.rows.get(ix).filter(|r| r.role == Role::User).cloned() else { return };
+        if self.streaming || (text.trim().is_empty() && row.attachments.is_empty()) {
             return;
         }
-        let row_id = self.rows[i].row_id;
-        if row_id < 0 {
+        if row.row_id < 0 {
             self.set_error("This message can't be changed yet; reopen the chat and try again.", cx);
             return;
         }
         let live = self.live_session.clone();
-        let Some(gateway) = self.gateway.clone() else { return };
+        let Some(gateway) = self.gateway.clone() else {
+            self.set_error("Not connected.", cx);
+            return;
+        };
         if live.is_empty() {
             return;
         }
-        self.truncate_rows(i);
+        let plan = edit::plan(&self.rows, ix);
+        self.editing = None;
+        self.truncate_rows(ix);
         self.error.clear();
-        self.on_user_message(text, Vec::new());
+        self.on_user_message(text, row.attachments.clone());
         self.streaming = true;
         let profile = self.active_bot.clone();
         self.mark_running(&live, &profile);
@@ -1355,29 +1364,46 @@ impl AppState {
         let queue = self.queue.clone();
         let text = text.to_string();
         runtime().spawn(async move {
-            let result = gateway
-                .request(
-                    "prompt.submit",
-                    json!({
-                        "session_id": live,
-                        "text": text,
-                        "profile": profile,
-                        "truncate_before_row_id": row_id,
-                        "confirm_truncate": true,
-                    }),
-                )
-                .await;
+            let result: Result<Value, String> = async {
+                // Images go back on the session for this prompt; files ride
+                // along as @file: references, as when first sent.
+                let mut refs = Vec::new();
+                for file in &row.attachments {
+                    if file.path.is_empty() {
+                        continue;
+                    }
+                    if file.kind == "image" {
+                        gateway
+                            .request("image.attach", json!({ "session_id": live, "path": file.path }))
+                            .await
+                            .map_err(|e| format!("Couldn't attach {}: {e}", file.name))?;
+                    } else {
+                        refs.push(format!("@file:{}", file.path));
+                    }
+                }
+                let has_images = row.attachments.iter().any(|f| f.kind == "image" && !f.path.is_empty());
+                let mut params = json!({
+                    "session_id": live,
+                    "text": attachments::compose_prompt(&text, &refs, has_images),
+                    "profile": profile,
+                });
+                plan.add_params(&mut params);
+                gateway.request("prompt.submit", params).await
+            }
+            .await;
             queue.queue(move |app, cx| {
                 if app.generation != generation {
                     return;
                 }
                 let open = app.live_session == live;
                 match result {
-                    Ok(reply) => {
-                        if let Some(id) = reply.get("user_row_id").and_then(Value::as_i64).filter(|_| open) {
+                    Ok(reply) if open => {
+                        app.rebind_row_ids(&plan, &reply);
+                        if let Some(id) = reply.get("user_row_id").and_then(Value::as_i64) {
                             app.on_user_row_id(id);
                         }
                     }
+                    Ok(_) => {}
                     Err(e) => {
                         app.mark_finished(&live);
                         if open {
@@ -1390,6 +1416,44 @@ impl AppState {
             });
         });
         cx.notify();
+    }
+
+    /// The server rewrites the rows it keeps when it cuts the history, so
+    /// the messages above the edit get new ids.
+    fn rebind_row_ids(&mut self, plan: &edit::Plan, reply: &Value) {
+        let Some(rebind) = edit::Rebind::from_reply(reply) else { return };
+        for ix in 0..self.rows.len().min(plan.cut) {
+            let old = self.rows[ix].row_id;
+            let user_ordinal = plan.user_ordinals.iter().position(|&u| u == ix);
+            if let Some(new) = rebind.new_id(old, user_ordinal) {
+                self.rows[ix].row_id = new;
+            }
+        }
+    }
+
+    /// Starts editing your message at row `ix` in place.
+    pub fn start_edit(&mut self, ix: usize) {
+        let Some(row) = self.rows.get(ix).filter(|r| r.role == Role::User) else { return };
+        let previous = self.editing.replace(row.id);
+        self.remeasure_row_id(previous);
+        self.list.splice(ix..ix + 1, 1);
+    }
+
+    pub fn cancel_edit(&mut self) {
+        let previous = self.editing.take();
+        self.remeasure_row_id(previous);
+    }
+
+    /// The row being edited, by index.
+    pub fn editing_index(&self) -> Option<usize> {
+        let id = self.editing?;
+        self.rows.iter().position(|r| r.id == id)
+    }
+
+    fn remeasure_row_id(&mut self, id: Option<u64>) {
+        if let Some(ix) = id.and_then(|id| self.rows.iter().position(|r| r.id == id)) {
+            self.list.splice(ix..ix + 1, 1);
+        }
     }
 
     pub fn answer_request(&mut self, id: Value, result: Value) {
@@ -1942,3 +2006,5 @@ mod tests {
 mod transcript_tests;
 #[cfg(test)]
 mod queue_tests;
+#[cfg(test)]
+mod edit_tests;

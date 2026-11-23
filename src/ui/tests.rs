@@ -1,7 +1,7 @@
 //! The real views in a headless window, driven by clicks and keys.
 
 use gpui_kit::test::TestWindowExt;
-use gpui_kit::{App, AppContext as _, Bounds, Entity, Point, TestAppContext, Window, WindowBounds, WindowOptions, px, size};
+use gpui_kit::{App, AppContext as _, Bounds, Entity, Point, TestAppContext, Window, WindowBounds, WindowOptions, point, px, size};
 use serde_json::json;
 
 use super::root::RootView;
@@ -73,6 +73,10 @@ impl Harness {
     pub fn focus_composer(&self, cx: &mut TestAppContext) {
         let composer = self.root.read_with(cx, |r, cx| r.chat.read(cx).composer.clone());
         self.ui(cx, |window, cx| composer.update(cx, |c, cx| c.focus(window, cx)));
+    }
+
+    pub fn edit_text(&self, cx: &mut TestAppContext) -> String {
+        self.root.read_with(cx, |r, cx| r.chat.read(cx).edit_input.read(cx).value().to_string())
     }
 
     pub fn composer_text(&self, cx: &mut TestAppContext) -> String {
@@ -205,14 +209,18 @@ fn messages_can_be_edited_regenerated_and_expanded(cx: &mut TestAppContext) {
     let (user, answer) = with_transcript(&h, cx);
     let tool = h.state.read_with(cx, |s, _| s.rows[2].id);
 
+    // Edit opens the message in place; Cancel puts it back.
     h.ui(cx, |w, cx| w.click(super::widgets::id("edit", user), cx));
-    let editing = h.root.read_with(cx, |r, cx| r.chat.read(cx).composer.read(cx).editing);
-    assert!(editing);
-    assert_eq!(h.composer_text(cx), "first question");
-    h.ui(cx, |w, _| assert!(w.try_find("cancel-edit").is_some()));
-    h.ui(cx, |w, cx| w.click("cancel-edit", cx));
-    assert!(!h.root.read_with(cx, |r, cx| r.chat.read(cx).composer.read(cx).editing));
-    assert_eq!(h.composer_text(cx), "");
+    assert_eq!(h.state.read_with(cx, |s, _| s.editing), Some(user));
+    assert_eq!(h.edit_text(cx), "first question");
+    h.ui(cx, |w, _| {
+        assert!(w.try_find(super::widgets::id("editing", user)).is_some());
+        assert!(w.try_find(super::widgets::id("sent", user)).is_none());
+    });
+    h.ui(cx, |w, cx| w.click(super::widgets::id("edit-cancel", user), cx));
+    assert_eq!(h.state.read_with(cx, |s, _| s.editing), None);
+    h.ui(cx, |w, _| assert!(w.try_find(super::widgets::id("sent", user)).is_some()));
+    assert_eq!(h.composer_text(cx), "", "the message box is left alone");
 
     // Regenerate resends the last question (here: nowhere to send it).
     h.ui(cx, |w, cx| w.click(super::widgets::id("regenerate", answer), cx));
@@ -589,4 +597,45 @@ fn the_queue_button_and_panel(cx: &mut TestAppContext) {
     let id = h.state.read_with(cx, |s, _| s.queued().unwrap().items[0].id);
     h.ui(cx, |w, cx| w.click(super::widgets::id("queued-remove", id), cx));
     assert!(h.state.read_with(cx, |s, _| s.queued().is_none()));
+}
+
+#[gpui_kit::test]
+fn chat_text_can_be_selected_and_copied(cx: &mut TestAppContext) {
+    let h = open(cx);
+    let (user, answer) = with_transcript(&h, cx);
+    h.focus_composer(cx);
+
+    // Drag across your message; Ctrl+C copies it even with the message box
+    // focused (it has nothing selected, so it lets the copy through).
+    let sent = h.ui(cx, |w, _| w.find(super::widgets::id("sent", user)).bounds());
+    let (from, to) = (point(sent.left() + px(17.), sent.center().y), point(sent.right() - px(4.), sent.center().y));
+    h.ui(cx, |w, cx| {
+        w.drag(from, to, cx);
+        w.press("ctrl-c", cx);
+    });
+    assert_eq!(cx.read_from_clipboard().and_then(|c| c.text()).as_deref(), Some("first question"));
+
+    // A selection can run from your message into the answer below it.
+    let body = h.ui(cx, |w, _| w.find(super::widgets::id("answer", answer)).bounds());
+    h.ui(cx, |w, cx| {
+        w.drag(from, point(body.left() + px(60.), body.top() + px(8.)), cx);
+        w.press("ctrl-c", cx);
+    });
+    let copied = cx.read_from_clipboard().and_then(|c| c.text()).unwrap_or_default();
+    assert!(copied.starts_with("first question") && copied.contains("An"), "{copied:?}");
+}
+
+#[gpui_kit::test]
+fn links_in_answers_still_open_on_click(cx: &mut TestAppContext) {
+    let h = open(cx);
+    h.state.update(cx, |s, cx| {
+        s.load_transcript(vec![json!({ "role": "assistant", "text": "[docs](https://example.com/docs) are here" })]);
+        cx.notify();
+    });
+    let answer = h.state.read_with(cx, |s, _| s.rows[0].id);
+    let body = h.ui(cx, |w, _| w.find(super::widgets::id("answer", answer)).bounds());
+    h.ui(cx, |w, cx| w.drag(point(body.left() + px(4.), body.top() + px(10.)), point(body.left() + px(200.), body.top() + px(10.)), cx));
+    assert_eq!(cx.opened_url(), None, "dragging over a link selects instead");
+    h.ui(cx, |w, cx| w.click_at(super::widgets::id("answer", answer), point(px(10.), px(10.)), cx));
+    assert_eq!(cx.opened_url().as_deref(), Some("https://example.com/docs"));
 }

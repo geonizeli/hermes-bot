@@ -8,6 +8,7 @@ pub mod markdown_view;
 pub mod motion;
 pub mod queue;
 pub mod root;
+pub mod selectable;
 pub mod screen;
 pub mod side_panel;
 pub mod state;

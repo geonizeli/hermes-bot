@@ -156,7 +156,7 @@ fn edit_drops_the_last_message_and_what_followed(cx: &mut TestAppContext) {
     // Without a stored id there's nothing to truncate on the server.
     state.update(cx, |s, cx| {
         s.rows[0].row_id = -1;
-        s.resend_last("again", cx);
+        s.resend_from(0, "again", cx);
     });
     state.read_with(cx, |s, _| {
         assert!(s.error.contains("can't be changed yet"));

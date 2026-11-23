@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use chrono::{Local, TimeZone};
+use gpui_kit::component::input::{Escape, InputEvent, Textarea, TextareaState};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -33,6 +34,8 @@ pub struct ChatView {
     /// The bot whose screen is connected ("" when none).
     run_key: String,
     pub(crate) jobs_expanded: Entity<HashSet<String>>,
+    /// The text box of the message being edited in place.
+    pub(crate) edit_input: Entity<TextareaState>,
     on_edit_bot: std::rc::Rc<dyn Fn(String, &mut Window, &mut App)>,
     _subscriptions: Vec<Subscription>,
     _poll: Task<()>,
@@ -64,6 +67,7 @@ impl ChatView {
         let composer = cx.new(|cx| Composer::new(state.clone(), window, cx));
         let screen = cx.new(ScreenView::new);
         let jobs_expanded = cx.new(|_| HashSet::new());
+        let edit_input = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, 14).submit_on_enter(true));
         let weak = cx.entity().downgrade();
         state.read(cx).list.set_scroll_handler(move |_, _, cx| {
             let _ = weak.update(cx, |_, cx| cx.notify());
@@ -75,6 +79,11 @@ impl ChatView {
             }),
             cx.observe(&screen, |_, _, cx| cx.notify()),
             cx.observe(&jobs_expanded, |_, _, cx| cx.notify()),
+            cx.subscribe_in(&edit_input, window, |this, _, event: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { shift: false, .. } = event {
+                    this.save_edit(window, cx);
+                }
+            }),
         ];
         // The job list and screen status go stale while shown; poll them.
         let poll = cx.spawn(async move |this, cx| {
@@ -107,10 +116,43 @@ impl ChatView {
             screen_expanded: false,
             run_key: String::new(),
             jobs_expanded,
+            edit_input,
             on_edit_bot: std::rc::Rc::new(on_edit_bot),
             _subscriptions: subscriptions,
             _poll: poll,
         }
+    }
+
+    /// Opens your message at row `ix` for editing, in place.
+    pub fn start_edit(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(text) = self.state.read(cx).rows.get(ix).map(|r| r.text.clone()) else { return };
+        let line = text.split('\n').count().saturating_sub(1) as u32;
+        let character = text.rsplit('\n').next().unwrap_or_default().encode_utf16().count() as u32;
+        self.edit_input.update(cx, |input, cx| {
+            input.set_value(text, window, cx);
+            input.set_cursor_position(gpui_kit::component::input::Position { line, character }, window, cx);
+            input.focus(window, cx);
+        });
+        self.state.update(cx, |s, cx| {
+            s.start_edit(ix);
+            cx.notify();
+        });
+    }
+
+    /// Sends the edited message in place of the original.
+    pub fn save_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ix) = self.state.read(cx).editing_index() else { return };
+        let text = self.edit_input.read(cx).value().to_string();
+        self.state.update(cx, |s, cx| s.resend_from(ix, &text, cx));
+        self.composer.update(cx, |c, cx| c.focus(window, cx));
+    }
+
+    pub fn cancel_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.state.update(cx, |s, cx| {
+            s.cancel_edit();
+            cx.notify();
+        });
+        self.composer.update(cx, |c, cx| c.focus(window, cx));
     }
 
     /// Connects the screen only while someone can see it.
@@ -261,10 +303,70 @@ impl ChatView {
     }
 }
 
-fn render_user(ix: usize, row: &Row, state: &Entity<AppState>, composer: &WeakEntity<Composer>, cx: &mut App) -> AnyElement {
+/// Where a row's text starts in the window's reading order, so a selection
+/// across messages copies them top to bottom. Rows count up as they're
+/// added; each gets 2^24 slots for its blocks and paragraphs.
+pub fn reading_order(row_id: u64) -> u64 {
+    row_id << 24
+}
+
+/// What a row needs from the chat view.
+#[derive(Clone)]
+struct RowContext {
+    state: Entity<AppState>,
+    chat: WeakEntity<ChatView>,
+    edit_input: Entity<TextareaState>,
+}
+
+/// Your message as an editable text box, with Cancel and Send.
+fn render_editor(row: &Row, rows: &RowContext, later: bool, cx: &mut App) -> AnyElement {
     let c = colors(cx).clone();
+    let busy = rows.state.read(cx).streaming;
+    let (cancel, send, escape) = (rows.chat.clone(), rows.chat.clone(), rows.chat.clone());
+    let note = if later {
+        "Sending replaces this message and everything after it."
+    } else {
+        "Sending replaces this message."
+    };
+    let card = ident(id("editing", row.id))
+        .w(relative(0.8))
+        .px(px(14.))
+        .py(px(10.))
+        .flex()
+        .flex_col()
+        .gap(px(10.))
+        .rounded(c.radius)
+        .bg(accent_surface(&c))
+        .border_1()
+        .border_color(c.accent.alpha(0.6))
+        .capture_action(move |_: &Escape, window, cx| {
+            let _ = escape.update(cx, |chat, cx| chat.cancel_edit(window, cx));
+            cx.stop_propagation();
+        })
+        .child(div().w_full().text_color(c.foreground).child(Textarea::new(&rows.edit_input).appearance(false).text_size(px(15.))))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(div().flex_1().min_w_0().child(widgets::muted(note, 12., &c)))
+                .child(widgets::button(id("edit-cancel", row.id), "Cancel", false, true, &c).on_click(move |_, window, cx| {
+                    let _ = cancel.update(cx, |chat, cx| chat.cancel_edit(window, cx));
+                }))
+                .child(widgets::button(id("edit-send", row.id), "Send", true, !busy, &c).on_click(move |_, window, cx| {
+                    let _ = send.update(cx, |chat, cx| chat.save_edit(window, cx));
+                })),
+        );
+    motion::fade_in(card, id("editing-in", row.id), motion::QUICK).into_any_element()
+}
+
+fn render_user(ix: usize, row: &Row, rows: &RowContext, cx: &mut App) -> AnyElement {
+    let c = colors(cx).clone();
+    let state = &rows.state;
     let s = state.read(cx);
-    let editable = s.last_user_index == Some(ix) && !s.streaming;
+    let editable = !s.streaming && s.connected && s.editing.is_none();
+    let editing = s.editing == Some(row.id);
+    let later = ix + 1 < s.rows.len();
     let group = SharedString::from(format!("user-{}", row.id));
     let files = (!row.attachments.is_empty()).then(|| {
         let images: Vec<AnyElement> = row
@@ -294,8 +396,7 @@ fn render_user(ix: usize, row: &Row, state: &Entity<AppState>, composer: &WeakEn
             .collect();
         div().flex().flex_wrap().justify_end().gap(px(6.)).max_w(relative(0.8)).children(images)
     });
-    let text = row.text.clone();
-    let composer = composer.clone();
+    let chat = rows.chat.clone();
     let actions = div()
         .flex()
         .gap(px(12.))
@@ -304,11 +405,22 @@ fn render_user(ix: usize, row: &Row, state: &Entity<AppState>, composer: &WeakEn
         .when(row.timestamp > 0.0, |d| d.child(widgets::muted(time_label(row.timestamp), 12., &c)))
         .when(editable, |d| {
             d.child(widgets::text_link(id("edit", row.id), "Edit", &c).on_click(move |_, window, cx| {
-                let _ = composer.update(cx, |composer, cx| composer.start_edit(&text, window, cx));
+                let _ = chat.update(cx, |chat, cx| chat.start_edit(ix, window, cx));
             }))
         });
+    if editing {
+        return div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .items_end()
+            .gap(px(6.))
+            .children(files)
+            .child(render_editor(row, rows, later, cx))
+            .into_any_element();
+    }
     let bubble = (!row.text.is_empty()).then(|| {
-        div()
+        ident(id("sent", row.id))
             .max_w(relative(0.8))
             .px(px(16.))
             .py(px(11.))
@@ -318,7 +430,7 @@ fn render_user(ix: usize, row: &Row, state: &Entity<AppState>, composer: &WeakEn
             .border_color(c.accent.alpha(0.3))
             .text_size(px(15.))
             .line_height(relative(1.45))
-            .child(row.text.clone())
+            .child(markdown_view::plain_text(id("sent-text", row.id), reading_order(row.id), row.text.clone(), cx))
     });
     div()
         .group(group)
@@ -379,13 +491,13 @@ fn render_assistant(ix: usize, row: &Row, state: &Entity<AppState>, window: &mut
             .pl(px(14.))
             .text_size(px(14.))
             .text_color(c.muted)
-            .child(row.reasoning.clone());
+            .child(markdown_view::plain_text(id("reasoning-text", row.id), reading_order(row.id), row.reasoning.clone(), cx));
         motion::rise_in_when(opened, body, id("reasoning-in", row.id), -6., motion::BASE)
     });
     // A caret breathes after the text while the answer streams in.
     let caret = (!row.done && !row.text.is_empty())
         .then(|| motion::breathe(div().w(px(8.)).h(px(16.)).bg(c.accent.alpha(0.8)), id("caret", row.id), 0.15));
-    let body = (!row.text.is_empty()).then(|| markdown_view::render(row.id, &row.text, state, window, cx));
+    let body = (!row.text.is_empty()).then(|| ident(id("answer", row.id)).w_full().child(markdown_view::render(row.id, reading_order(row.id) + (1 << 12), &row.text, state, window, cx)));
     let actions = (row.done && !row.text.is_empty()).then(|| {
         let st = state.clone();
         div()
@@ -397,7 +509,11 @@ fn render_assistant(ix: usize, row: &Row, state: &Entity<AppState>, window: &mut
             .when(can_regenerate, |d| {
                 d.child(widgets::text_link(id("regenerate", row.id), "Regenerate", &c).on_click(move |_, _, cx| {
                     let text = last_user_text.clone();
-                    st.update(cx, |s, cx| s.resend_last(&text, cx));
+                    st.update(cx, |s, cx| {
+                        if let Some(u) = s.last_user_index {
+                            s.resend_from(u, &text, cx);
+                        }
+                    });
                 }))
             })
             .when(row.timestamp > 0.0, |d| d.child(widgets::muted(time_label(row.timestamp), 12., &c)))
@@ -438,7 +554,9 @@ fn render_command(row: &Row, window: &mut Window, cx: &mut App) -> AnyElement {
             motion::breathe(div().text_color(c.accent).child(format!("{}  · running…", row.name)), id("command-running", row.id), 0.45)
                 .into_any_element()
         })
-        .when(!row.text.is_empty(), |d| d.child(div().text_color(c.foreground).child(row.text.clone())))
+        .when(!row.text.is_empty(), |d| {
+            d.child(div().text_color(c.foreground).child(markdown_view::plain_text(id("command-text", row.id), reading_order(row.id), row.text.clone(), cx)))
+        })
         .into_any_element()
 }
 
@@ -494,7 +612,8 @@ fn loading_transcript(cx: &App) -> impl IntoElement {
         )
 }
 
-fn render_row(ix: usize, state: &Entity<AppState>, composer: &WeakEntity<Composer>, window: &mut Window, cx: &mut App) -> AnyElement {
+fn render_row(ix: usize, rows: &RowContext, window: &mut Window, cx: &mut App) -> AnyElement {
+    let state = &rows.state;
     let (row, count, waiting) = {
         let s = state.read(cx);
         let Some(row) = s.rows.get(ix).cloned() else { return div().into_any_element() };
@@ -502,7 +621,7 @@ fn render_row(ix: usize, state: &Entity<AppState>, composer: &WeakEntity<Compose
     };
     let c = colors(cx).clone();
     let content = match row.role {
-        Role::User => render_user(ix, &row, state, composer, cx),
+        Role::User => render_user(ix, &row, rows, cx),
         Role::Assistant => render_assistant(ix, &row, state, window, cx),
         Role::Tool => tool_card::render(ix, &row, state, cx),
         Role::Todos => tool_card::render_todos(&row, cx),
@@ -552,9 +671,8 @@ impl Render for ChatView {
         let list_state = s.list.clone();
         let chat_key = s.active_bot.clone();
 
-        let state = self.state.clone();
-        let composer = self.composer.downgrade();
-        let conversation = list(list_state, move |ix, window, cx| render_row(ix, &state, &composer, window, cx))
+        let rows = RowContext { state: self.state.clone(), chat: cx.entity().downgrade(), edit_input: self.edit_input.clone() };
+        let conversation = list(list_state, move |ix, window, cx| render_row(ix, &rows, window, cx))
             .size_full();
         // Each chat fades in as it opens, so switching bots reads as a change
         // of place rather than a jump.

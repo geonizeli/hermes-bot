@@ -13,11 +13,16 @@ use crate::backend::gateway::{Gateway, Incoming};
 use crate::backend::runtime;
 use crate::backend::store::Config;
 
-type Requests = Arc<Mutex<Vec<Value>>>;
+pub(super) type Requests = Arc<Mutex<Vec<Value>>>;
 
 /// A gateway that answers every request with `{status: "streaming"}` and
 /// keeps each request for the test to read.
 fn fake_gateway() -> (Arc<Gateway>, Requests) {
+    fake_gateway_with(|_| json!({ "status": "streaming" }))
+}
+
+/// A gateway that answers each request with `reply(request)`.
+pub(super) fn fake_gateway_with(reply: fn(&Value) -> Value) -> (Arc<Gateway>, Requests) {
     let requests: Requests = Arc::default();
     let seen = requests.clone();
     let gateway = runtime().block_on(async move {
@@ -28,7 +33,7 @@ fn fake_gateway() -> (Arc<Gateway>, Requests) {
             let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
             while let Some(Ok(Message::Text(text))) = ws.next().await {
                 let frame: Value = serde_json::from_str(&text).unwrap();
-                let reply = json!({ "jsonrpc": "2.0", "id": frame["id"], "result": { "status": "streaming" } });
+                let reply = json!({ "jsonrpc": "2.0", "id": frame["id"], "result": reply(&frame) });
                 seen.lock().unwrap().push(frame);
                 let _ = ws.send(Message::text(reply.to_string())).await;
             }
@@ -41,9 +46,12 @@ fn fake_gateway() -> (Arc<Gateway>, Requests) {
 }
 
 fn state(cx: &mut TestAppContext) -> (Entity<AppState>, Requests, tempfile::TempDir) {
+    state_with(cx, fake_gateway())
+}
+
+pub(super) fn state_with(cx: &mut TestAppContext, (gateway, requests): (Arc<Gateway>, Requests)) -> (Entity<AppState>, Requests, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("servers.json");
-    let (gateway, requests) = fake_gateway();
     let state = cx.new(|cx| {
         let mut s = AppState::with_config(Config::default(), path, cx);
         s.active_bot = "default".into();
@@ -76,7 +84,7 @@ fn complete(state: &Entity<AppState>, cx: &mut TestAppContext, session: &str, st
 }
 
 /// The requests named `method`, once at least `count` have arrived.
-fn wait_for(requests: &Requests, method: &str, count: usize) -> Vec<Value> {
+pub(super) fn wait_for(requests: &Requests, method: &str, count: usize) -> Vec<Value> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let found: Vec<Value> =
