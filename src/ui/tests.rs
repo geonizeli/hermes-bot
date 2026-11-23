@@ -535,3 +535,23 @@ fn the_theme_switches_and_is_remembered(cx: &mut TestAppContext) {
         assert_eq!(s.config.ui.theme.as_deref(), Some("dark"));
     });
 }
+
+#[gpui_kit::test]
+fn the_window_draws_its_frame_only_where_the_compositor_does_not(cx: &mut TestAppContext) {
+    let h = open(cx);
+    h.ui(cx, |w, _| {
+        assert!(w.try_find("title-bar").is_none(), "a compositor-drawn frame needs no title bar of ours");
+        assert!(w.try_find("root").is_some());
+    });
+
+    // GNOME on Wayland leaves the frame to the app.
+    cx.simulate_window_decorations_change(h.window, gpui_kit::Decorations::Client { tiling: Default::default() });
+    h.ui(cx, |w, _| {
+        assert!(w.try_find("title-bar").is_some(), "the window draws its own title bar");
+        assert!(w.try_find("close").is_some(), "with a close button");
+        assert!(w.try_find("root").is_some(), "the chat is still there");
+    });
+
+    cx.simulate_window_decorations_change(h.window, gpui_kit::Decorations::Server);
+    h.ui(cx, |w, _| assert!(w.try_find("title-bar").is_none()));
+}

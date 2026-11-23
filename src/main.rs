@@ -5,6 +5,17 @@ mod ui;
 
 use gpui_kit::*;
 
+/// The compositor draws the frame where it can; GPUI falls back to drawing
+/// it in the window where it can't (GNOME on Wayland).
+/// `HERMES_BOT_DECORATIONS=client` asks for the window's own title bar; most
+/// compositors honour that, though Hyprland keeps its own frame.
+fn decorations() -> WindowDecorations {
+    match std::env::var("HERMES_BOT_DECORATIONS").as_deref() {
+        Ok("client") => WindowDecorations::Client,
+        _ => WindowDecorations::Server,
+    }
+}
+
 fn main() {
     gpui_kit::application().run(|cx| {
         gpui_kit::init(cx);
@@ -16,6 +27,7 @@ fn main() {
             // Matches the window to hermes-bot.desktop, so Hyprland (Wayland
             // app_id) and the launcher pick up the installed icon.
             app_id: Some("hermes-bot".into()),
+            window_decorations: Some(decorations()),
             ..Default::default()
         };
         if let Err(e) = gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| ui::root::RootView::new(window, cx))) {
