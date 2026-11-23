@@ -162,6 +162,11 @@ pub fn init(cx: &mut App) {
     let dir = theme::omarchy_current_dir();
     // Corners stay sharp outside Hyprland, like Omarchy's default.
     apply(theme::read_palette(&dir), Some(theme::hyprland_rounding().unwrap_or(0)), cx);
+    // Test builds read the theme once: the watchers wake the UI from their
+    // own threads, which GPUI's test scheduler rejects (see `ui::queue`).
+    if cfg!(test) {
+        return;
+    }
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Change>();
     let palette_tx = tx.clone();
