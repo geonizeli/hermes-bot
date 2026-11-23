@@ -5,6 +5,7 @@ pub mod botedit;
 pub mod cron;
 pub mod face;
 pub mod gateway;
+pub mod groups;
 pub mod history;
 pub mod markdown;
 pub mod media;

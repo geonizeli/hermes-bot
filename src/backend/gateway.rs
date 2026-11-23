@@ -21,7 +21,22 @@ pub enum Incoming {
     Closed(String),
 }
 
-type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value, String>>>>>;
+/// A JSON-RPC error as the server sent it.
+#[derive(Debug, Clone, Default)]
+pub struct RpcError {
+    pub code: i64,
+    pub message: String,
+    /// The error's `data`, Null when it had none.
+    pub data: Value,
+}
+
+impl RpcError {
+    fn local(message: impl Into<String>) -> RpcError {
+        RpcError { code: 0, message: message.into(), data: Value::Null }
+    }
+}
+
+type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value, RpcError>>>>>;
 
 pub struct Gateway {
     outgoing: mpsc::UnboundedSender<Message>,
@@ -121,7 +136,7 @@ impl Gateway {
                 }
             };
             for (_, waiter) in reader_pending.lock().await.drain() {
-                let _ = waiter.send(Err(reason.clone()));
+                let _ = waiter.send(Err(RpcError::local(reason.clone())));
             }
             let _ = events.send(Incoming::Closed(reason));
         });
@@ -150,20 +165,25 @@ impl Gateway {
 
     /// `request` with its own deadline, for calls the server takes long on.
     pub async fn request_within(&self, method: &str, params: Value, deadline: Duration) -> Result<Value, String> {
+        self.request_detailed(method, params, deadline).await.map_err(|e| e.message)
+    }
+
+    /// `request_within` that keeps the server's error code and data.
+    pub async fn request_detailed(&self, method: &str, params: Value, deadline: Duration) -> Result<Value, RpcError> {
         let id = format!("hb{}", self.next_id.fetch_add(1, Ordering::Relaxed));
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(id.clone(), tx);
         let frame = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
         if self.outgoing.send(Message::text(frame.to_string())).is_err() {
             self.pending.lock().await.remove(&id);
-            return Err("Not connected.".into());
+            return Err(RpcError::local("Not connected."));
         }
         match tokio::time::timeout(deadline, rx).await {
             Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err("Not connected.".into()),
+            Ok(Err(_)) => Err(RpcError::local("Not connected.")),
             Err(_) => {
                 self.pending.lock().await.remove(&id);
-                Err(format!("The server didn't answer {method} in time."))
+                Err(RpcError::local(format!("The server didn't answer {method} in time.")))
             }
         }
     }
@@ -190,11 +210,15 @@ async fn route(frame: Value, pending: &Pending, events: &mpsc::UnboundedSender<I
             };
             if let Some(waiter) = pending.lock().await.remove(&id) {
                 let result = match frame.get("error") {
-                    Some(error) => Err(error
-                        .get("message")
-                        .and_then(Value::as_str)
-                        .unwrap_or("The server reported an error.")
-                        .to_string()),
+                    Some(error) => Err(RpcError {
+                        code: error.get("code").and_then(Value::as_i64).unwrap_or(0),
+                        message: error
+                            .get("message")
+                            .and_then(Value::as_str)
+                            .unwrap_or("The server reported an error.")
+                            .to_string(),
+                        data: error.get("data").cloned().unwrap_or(Value::Null),
+                    }),
                     None => Ok(frame.get("result").cloned().unwrap_or(Value::Null)),
                 };
                 let _ = waiter.send(result);
