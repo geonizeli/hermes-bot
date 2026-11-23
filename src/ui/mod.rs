@@ -4,6 +4,8 @@ pub mod chat;
 pub mod composer;
 pub mod dialogs;
 pub mod edit_bot;
+pub mod group;
+pub mod group_dialogs;
 pub mod markdown_view;
 pub mod motion;
 pub mod queue;
