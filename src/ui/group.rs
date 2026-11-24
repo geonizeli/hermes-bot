@@ -119,23 +119,15 @@ impl GroupView {
             }),
             cx.observe(&state, |_, _, cx| cx.notify()),
         ];
-        // The gateway runs the group; read it while it's open, and the list
-        // of groups now and then.
+        // The gateway runs the group; read it while it's open (`groups.changed`
+        // reads it sooner, and the state re-reads the list of groups).
         let poll = cx.spawn(async move |this, cx| {
-            let mut tick: u64 = 0;
             loop {
                 cx.background_executor().timer(Duration::from_secs(2)).await;
-                tick += 1;
                 let Ok(()) = this.update(cx, |this, cx| {
                     this.state.update(cx, |s, cx| {
-                        if !s.connected {
-                            return;
-                        }
-                        if s.active_group.is_some() {
+                        if s.connected && s.active_group.is_some() {
                             s.poll_group(cx);
-                        }
-                        if tick % 15 == 0 {
-                            s.refresh_groups(cx);
                         }
                     });
                 }) else {

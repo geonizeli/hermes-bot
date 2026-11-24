@@ -190,15 +190,54 @@ impl AppState {
         if !self.groups.offers("groups.list") {
             return;
         }
-        self.group_call("groups.list", json!({}), cx, |app, result, _| {
+        self.group_call("groups.list", json!({}), cx, |app, result, cx| {
             if let Ok(reply) = result {
-                app.groups.rooms = groups::rooms_from_list(&reply);
-                // The open room's name and members follow the list.
-                if let Some(room) = app.groups.rooms.iter().find(|r| r.room_id == app.group.room_id) {
-                    app.group.room = Some(room.clone());
-                }
+                let rooms = groups::rooms_from_list(&reply);
+                app.apply_rooms(rooms, cx);
             }
         });
+    }
+
+    /// Takes a fresh room list. Rooms gone from the server are forgotten;
+    /// if the open one is among them, the bot chat comes back.
+    pub(super) fn apply_rooms(&mut self, rooms: Vec<Room>, cx: &mut Context<Self>) {
+        let gone: Vec<Room> = self
+            .groups
+            .rooms
+            .iter()
+            .filter(|old| !rooms.iter().any(|r| r.room_id == old.room_id))
+            .cloned()
+            .collect();
+        self.groups.rooms = rooms;
+        for room in &gone {
+            self.groups.previews.remove(&room.room_id);
+            self.groups.sends.remove(&room.room_id);
+        }
+        // A room only just created may not be listed yet: only one the
+        // list had before counts as gone.
+        if let Some(open) = gone.iter().find(|r| Some(&r.room_id) == self.active_group.as_ref()) {
+            let name = if open.name.is_empty() { "The group".to_string() } else { open.name.clone() };
+            self.status = format!("{name} was disbanded on the server.");
+            self.leave_group();
+            cx.emit(AppEvent::TranscriptLoaded);
+        }
+        // The open room's name and members follow the list.
+        if let Some(room) = self.groups.rooms.iter().find(|r| r.room_id == self.group.room_id) {
+            self.group.room = Some(room.clone());
+        }
+        cx.notify();
+    }
+
+    /// `groups.changed`: the server says rooms moved. The list is read
+    /// again, and the open room when it's among them (no `room_ids` means
+    /// every room).
+    pub(super) fn on_groups_changed(&mut self, payload: &Value, cx: &mut Context<Self>) {
+        self.refresh_groups(cx);
+        let Some(open) = self.active_group.clone() else { return };
+        let named = payload.get("room_ids").and_then(Value::as_array);
+        if named.is_none_or(|ids| ids.iter().any(|id| id.as_str() == Some(open.as_str()))) {
+            self.poll_group(cx);
+        }
     }
 
     /// A group's name, from the list (or the open group).

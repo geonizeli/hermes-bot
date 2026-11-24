@@ -173,19 +173,21 @@ impl AppState {
             // Summarizing a long chat is a model call; give it time.
             let result = gateway.request_within("session.compress", params, Duration::from_secs(600)).await;
             queue.queue(move |app, cx| {
-                if app.generation != generation || app.active_bot != profile {
+                if app.generation != generation {
                     return;
                 }
-                let text = match result {
-                    Ok(reply) => {
-                        if let Some(usage) = reply.get("usage").filter(|u| u.is_object()) {
-                            app.apply_usage(usage);
+                app.with_bot_chat(&profile, cx, |app, _| {
+                    let text = match result {
+                        Ok(reply) => {
+                            if let Some(usage) = reply.get("usage").filter(|u| u.is_object()) {
+                                app.apply_usage(usage);
+                            }
+                            slash::compress_summary(&reply)
                         }
-                        slash::compress_summary(&reply)
-                    }
-                    Err(e) => format!("error: {e}"),
-                };
-                app.on_command_output(&typed, &text);
+                        Err(e) => format!("error: {e}"),
+                    };
+                    app.on_command_output(&typed, &text);
+                });
                 cx.notify();
             });
         });
@@ -211,8 +213,8 @@ impl AppState {
                     let live = opened.live.clone();
                     let profile = profile.clone();
                     queue.queue(move |app, cx| {
-                        if app.generation == generation && app.active_bot == profile {
-                            app.apply_opened(opened, None, cx);
+                        if app.generation == generation {
+                            app.with_bot_chat(&profile, cx, |app, cx| app.apply_opened(opened, None, cx));
                         }
                     });
                     live
@@ -223,7 +225,15 @@ impl AppState {
             }
             .await;
             queue.queue(move |app, cx| {
-                if app.generation != generation || app.active_bot != profile {
+                if app.generation != generation {
+                    return;
+                }
+                if app.active_bot != profile || app.active_group.is_some() {
+                    // Switched away: the command's row closes in that bot's
+                    // chat; what it hands back (drafts, pickers) is dropped.
+                    let text = result.err().map(|e| format!("error: {e}")).unwrap_or_default();
+                    app.with_bot_chat(&profile, cx, |app, _| app.on_command_output(&typed, &text));
+                    cx.notify();
                     return;
                 }
                 app.apply_directive(&typed, result, cx);
