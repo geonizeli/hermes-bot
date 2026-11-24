@@ -33,6 +33,7 @@ pub mod commands;
 pub mod editor;
 mod edit;
 pub mod groups;
+mod slots;
 
 pub use chat::{FileRef, Role, Row, Todo};
 pub use queued::{MessageQueue, QueuedMessage};
@@ -180,12 +181,22 @@ pub struct AppState {
     /// The open group (shown instead of the bot chat), by room id.
     pub active_group: Option<String>,
     pub group: GroupChat,
+    /// Every other bot's chat, kept loaded (see slots.rs).
+    parked: HashMap<String, slots::ChatSlot>,
+    /// The first roster read is out: polls wait for it.
+    bots_loading: bool,
+    /// A parked chat is swapped in for a moment: nothing should reach the
+    /// views as if it were the open one.
+    backstage: bool,
     queue: Queue<AppState>,
 }
 
 impl EventEmitter<AppEvent> for AppState {}
 
 /// Shown while a sign-in is held in memory for want of a keyring.
+/// How often the bots and groups are read again.
+const ROSTER_POLL: std::time::Duration = std::time::Duration::from_secs(5);
+
 const NO_KEYRING: &str = "There's no keyring to save your sign-in, so you'll need to sign in again after quitting. \
      Install and unlock a Secret Service keyring (GNOME Keyring, KWallet or KeePassXC) to stay signed in.";
 
@@ -291,7 +302,28 @@ impl AppState {
         let mut state = Self::with_config(config, path, cx);
         state.error = error;
         state.connect_active(cx);
+        state.watch_server(cx);
         state
+    }
+
+    /// The server pushes no word when a bot is added or deleted (the official
+    /// desktop polls too), and `groups.changed` only covers what its watcher
+    /// sees: re-read the bots and groups every few seconds.
+    fn watch_server(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(ROSTER_POLL).await;
+                let Ok(()) = this.update(cx, |app, cx| {
+                    if app.connected && !app.bots_loading {
+                        app.refresh_bots(cx);
+                        app.refresh_groups(cx);
+                    }
+                }) else {
+                    break;
+                };
+            }
+        })
+        .detach();
     }
 
     /// State for `config`, saved to `config_path`, not yet connected.
@@ -344,6 +376,9 @@ impl AppState {
             groups: Groups::default(),
             active_group: None,
             group: GroupChat::default(),
+            parked: HashMap::new(),
+            bots_loading: false,
+            backstage: false,
             queue: Queue::new(cx),
         }
     }
@@ -432,6 +467,9 @@ impl AppState {
         self.roster_chats.clear();
         self.catalogs.clear();
         self.running.clear();
+        // The live sessions die with the socket: every chat loads again.
+        self.parked.clear();
+        self.bots_loading = false;
         self.connected = false;
         self.streaming = false;
         self.chat_loading = false;
@@ -534,8 +572,10 @@ impl AppState {
     }
 
     fn load_bots(&mut self, cx: &mut Context<Self>) {
+        self.bots_loading = true;
         self.call("profiles.list", json!({ "include_sessions": true }), cx, |app, result, cx| {
-            app.apply_roster(&result, cx);
+            app.bots_loading = false;
+            app.apply_roster(&result, true, cx);
             let server_id = app.config.active_server.clone().unwrap_or_default();
             let remembered = app.config.last_bot.get(&server_id).cloned();
             let pick = remembered
@@ -548,21 +588,43 @@ impl AppState {
             }
             app.active_bot = pick;
             app.open_bot_chat(cx);
+            app.preload_chats(cx);
         });
     }
 
-    /// Re-reads the roster (names, looks, avatars) without touching the open chat.
+    /// Re-reads the roster (names, looks) without touching the open chat;
+    /// bots deleted on the server leave, new ones load.
     fn refresh_bots(&mut self, cx: &mut Context<Self>) {
-        self.call("profiles.list", json!({ "include_sessions": true }), cx, |app, result, cx| {
-            app.apply_roster(&result, cx);
+        self.refresh_bots_with(false, cx);
+    }
+
+    /// `refresh_bots`, fetching every avatar again (after an edit).
+    pub(super) fn refresh_bots_with(&mut self, all_avatars: bool, _cx: &mut Context<Self>) {
+        let Some(gateway) = self.gateway.clone() else { return };
+        let generation = self.generation;
+        let queue = self.queue.clone();
+        // A failed poll isn't worth an error: the next one tries again.
+        runtime().spawn(async move {
+            let Ok(result) = gateway.request("profiles.list", json!({ "include_sessions": true })).await else { return };
+            queue.queue(move |app, cx| {
+                if app.generation != generation || app.bots_loading {
+                    return;
+                }
+                let before: Vec<String> = app.bots.iter().map(|b| b.name.clone()).collect();
+                app.apply_roster(&result, all_avatars, cx);
+                app.sync_bots(&before, cx);
+            });
         });
     }
 
     /// Takes a `profiles.list` reply as the sidebar's bots, then fetches
     /// their avatars.
-    fn apply_roster(&mut self, result: &Value, cx: &mut Context<Self>) {
-        let profiles = result.get("profiles").and_then(Value::as_array).cloned().unwrap_or_default();
+    /// `all_avatars` false fetches only the avatars of bots that are new or
+    /// have none cached.
+    fn apply_roster(&mut self, result: &Value, all_avatars: bool, cx: &mut Context<Self>) {
+        let Some(profiles) = result.get("profiles").and_then(Value::as_array).cloned() else { return };
         let server_id = self.config.active_server.clone().unwrap_or_default();
+        let known: Vec<String> = self.bots.iter().map(|b| b.name.clone()).collect();
         let previews: HashMap<String, String> = self.bots.iter().map(|b| (b.name.clone(), b.preview.clone())).collect();
         let mut with_avatar = Vec::new();
         self.bots = profiles
@@ -572,10 +634,12 @@ impl AppState {
                 let mut avatar = None;
                 let mut avatar_face = false;
                 if p.get("has_avatar").and_then(Value::as_bool).unwrap_or(false) {
-                    with_avatar.push(name.clone());
                     if let Some(file) = media::cached_avatar(&server_id, &name) {
                         avatar_face = botedit::is_face_copy(&file);
                         avatar = Some(file);
+                    }
+                    if all_avatars || avatar.is_none() || !known.contains(&name) {
+                        with_avatar.push(name.clone());
                     }
                 } else {
                     media::clear_avatar(&server_id, &name);
@@ -659,120 +723,39 @@ impl AppState {
         }
         match incoming {
             Incoming::Event { kind, session_id, payload } => {
-                let ours = session_id.is_empty() || session_id == self.live_session;
-                let text = |key: &str| payload.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
                 if kind.starts_with("display.") {
                     self.handle_display_event(&kind, &payload);
                     cx.notify();
                     return;
                 }
                 match kind.as_str() {
-                    // A turn finishing in a bot whose chat isn't open.
-                    "message.complete" | "error" if !ours => {
-                        if let Some(profile) = self.mark_finished(&session_id) {
-                            let final_text = text("text");
-                            if kind == "message.complete" && !final_text.trim().is_empty() {
-                                self.set_bot_preview(&profile, &final_text);
-                            }
-                            let completed = kind == "message.complete" && matches!(text("status").as_str(), "" | "complete");
-                            self.after_turn(&profile, &session_id, completed, cx);
-                        }
-                    }
-                    _ if !ours => {}
-                    "session.info" => {
-                        if payload.is_object() {
-                            self.session_info = payload.clone();
-                            if let Some(usage) = payload.get("usage").filter(|u| u.is_object()) {
-                                self.apply_usage(usage);
-                            }
-                        }
-                    }
-                    "session.usage" => self.apply_usage(&payload),
-                    "message.start" => self.on_assistant_started(),
-                    "message.delta" => {
-                        let delta = text("text");
-                        if !delta.is_empty() {
-                            self.on_assistant_delta(&delta);
-                        }
-                    }
-                    "reasoning.delta" | "thinking.delta" => self.on_reasoning_delta(&text("text")),
-                    "tool.start" => {
-                        let label = payload
-                            .get("labels")
-                            .and_then(|l| l.get(0))
-                            .and_then(|l| l.get("text").and_then(Value::as_str))
-                            .unwrap_or_default()
-                            .to_string();
-                        let detail = [label, text("preview"), text("context")]
-                            .into_iter()
-                            .find(|s| !s.is_empty())
-                            .unwrap_or_default();
-                        let args = match payload.get("args") {
-                            Some(a) if !a.is_null() => history::pretty_args(a),
-                            _ => text("args_text"),
-                        };
-                        self.on_tool_started(text("tool_id"), text("name"), detail, args);
-                    }
-                    "tool.complete" => {
-                        let (mut result, mut diff, mut error) = history::tool_result(payload.get("result").unwrap_or(&Value::Null));
-                        if result.is_empty() {
-                            result = [text("result_text"), text("summary")].into_iter().find(|s| !s.is_empty()).unwrap_or_default();
-                        }
-                        if !text("inline_diff").is_empty() {
-                            diff = text("inline_diff");
-                        }
-                        if !text("error").is_empty() {
-                            error = text("error");
-                        }
-                        let todos = payload.get("todos").map(chat::todos_from).unwrap_or_default();
-                        let duration = payload.get("duration_s").and_then(Value::as_f64).unwrap_or(0.0);
-                        self.on_tool_finished(chat::ToolDone {
-                            tool_id: text("tool_id"),
-                            name: text("name"),
-                            summary: text("summary"),
-                            result,
-                            diff,
-                            todos,
-                            duration,
-                            error,
-                        });
-                    }
-                    "message.interim" => {
-                        let streamed = payload.get("already_streamed").and_then(Value::as_bool).unwrap_or(false);
-                        self.on_assistant_interim(&text("text"), streamed);
-                    }
-                    "todo.updated" => {
-                        if let Some(todos) = payload.get("todos").filter(|t| t.is_array()) {
-                            self.on_todos_updated(chat::todos_from(todos));
-                        }
-                    }
-                    "message.complete" => {
-                        let live = self.live_session.clone();
-                        self.mark_finished(&live);
-                        self.streaming = false;
-                        if let Some(usage) = payload.get("usage").filter(|u| u.is_object()) {
-                            self.apply_usage(usage);
-                        }
-                        let status = Some(text("status")).filter(|s| !s.is_empty()).unwrap_or_else(|| "complete".into());
-                        let error = Some(text("error")).filter(|s| !s.is_empty()).unwrap_or_else(|| text("failure_reason"));
-                        let final_text = text("text");
-                        if !final_text.trim().is_empty() {
-                            let active = self.active_bot.clone();
-                            self.set_bot_preview(&active, &final_text);
-                        }
-                        self.on_turn_finished(&status, &final_text, &error);
-                        let active = self.active_bot.clone();
-                        self.after_turn(&active, &live, status == "complete", cx);
-                    }
-                    "error" => {
-                        let live = self.live_session.clone();
-                        self.mark_finished(&live);
-                        self.streaming = false;
-                        self.error = text("message");
-                        let active = self.active_bot.clone();
-                        self.after_turn(&active, &live, false, cx);
-                    }
+                    // Another client or a cron run wrote to a session store.
+                    "sessions.changed" => self.mark_parked_stale(),
+                    "groups.changed" => self.on_groups_changed(&payload, cx),
                     _ => {}
+                }
+                if session_id.is_empty() || session_id == self.live_session {
+                    let (bot, live) = (self.active_bot.clone(), self.live_session.clone());
+                    if let Some(completed) = self.chat_event(&kind, &payload, cx) {
+                        self.after_turn(&bot, &live, completed, cx);
+                    }
+                } else if let Some(bot) = self.bot_for_live(&session_id) {
+                    // A parked chat keeps up with its session.
+                    let ended = self.with_bot_chat(&bot, cx, |app, cx| app.chat_event(&kind, &payload, cx)).flatten();
+                    if let Some(completed) = ended {
+                        self.after_turn(&bot, &session_id, completed, cx);
+                    }
+                } else if matches!(kind.as_str(), "message.complete" | "error") {
+                    // A turn finishing in a bot whose chat isn't loaded.
+                    let text = |key: &str| payload.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
+                    if let Some(profile) = self.mark_finished(&session_id) {
+                        let final_text = text("text");
+                        if kind == "message.complete" && !final_text.trim().is_empty() {
+                            self.set_bot_preview(&profile, &final_text);
+                        }
+                        let completed = kind == "message.complete" && matches!(text("status").as_str(), "" | "complete");
+                        self.after_turn(&profile, &session_id, completed, cx);
+                    }
                 }
             }
             Incoming::ServerRequest { id, method, params } => {
@@ -783,6 +766,7 @@ impl AppState {
                 self.queues.values_mut().for_each(MessageQueue::park);
                 self.gateway = None;
                 self.running.clear();
+                self.parked.clear();
                 session::set(None);
                 self.connected = false;
                 self.streaming = false;
@@ -806,6 +790,112 @@ impl AppState {
             }
         }
         cx.notify();
+    }
+
+    /// Applies a session event to the open chat (or a parked one swapped
+    /// in). `Some(completed)` when the turn ended.
+    fn chat_event(&mut self, kind: &str, payload: &Value, _cx: &mut Context<Self>) -> Option<bool> {
+        let text = |key: &str| payload.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
+        match kind {
+            "session.info" => {
+                if payload.is_object() {
+                    self.session_info = payload.clone();
+                    if let Some(usage) = payload.get("usage").filter(|u| u.is_object()) {
+                        self.apply_usage(usage);
+                    }
+                }
+            }
+            "session.usage" => self.apply_usage(&payload),
+            "message.start" => self.on_assistant_started(),
+            "message.delta" => {
+                let delta = text("text");
+                if !delta.is_empty() {
+                    self.on_assistant_delta(&delta);
+                }
+            }
+            "reasoning.delta" | "thinking.delta" => self.on_reasoning_delta(&text("text")),
+            "tool.start" => {
+                let label = payload
+                    .get("labels")
+                    .and_then(|l| l.get(0))
+                    .and_then(|l| l.get("text").and_then(Value::as_str))
+                    .unwrap_or_default()
+                    .to_string();
+                let detail = [label, text("preview"), text("context")]
+                    .into_iter()
+                    .find(|s| !s.is_empty())
+                    .unwrap_or_default();
+                let args = match payload.get("args") {
+                    Some(a) if !a.is_null() => history::pretty_args(a),
+                    _ => text("args_text"),
+                };
+                self.on_tool_started(text("tool_id"), text("name"), detail, args);
+            }
+            "tool.complete" => {
+                let (mut result, mut diff, mut error) = history::tool_result(payload.get("result").unwrap_or(&Value::Null));
+                if result.is_empty() {
+                    result = [text("result_text"), text("summary")].into_iter().find(|s| !s.is_empty()).unwrap_or_default();
+                }
+                if !text("inline_diff").is_empty() {
+                    diff = text("inline_diff");
+                }
+                if !text("error").is_empty() {
+                    error = text("error");
+                }
+                let todos = payload.get("todos").map(chat::todos_from).unwrap_or_default();
+                let duration = payload.get("duration_s").and_then(Value::as_f64).unwrap_or(0.0);
+                self.on_tool_finished(chat::ToolDone {
+                    tool_id: text("tool_id"),
+                    name: text("name"),
+                    summary: text("summary"),
+                    result,
+                    diff,
+                    todos,
+                    duration,
+                    error,
+                });
+            }
+            "message.interim" => {
+                let streamed = payload.get("already_streamed").and_then(Value::as_bool).unwrap_or(false);
+                self.on_assistant_interim(&text("text"), streamed);
+            }
+            "todo.updated" => {
+                if let Some(todos) = payload.get("todos").filter(|t| t.is_array()) {
+                    self.on_todos_updated(chat::todos_from(todos));
+                }
+            }
+            "message.complete" => {
+                let live = self.live_session.clone();
+                self.mark_finished(&live);
+                self.streaming = false;
+                if let Some(usage) = payload.get("usage").filter(|u| u.is_object()) {
+                    self.apply_usage(usage);
+                }
+                let status = Some(text("status")).filter(|s| !s.is_empty()).unwrap_or_else(|| "complete".into());
+                let error = Some(text("error")).filter(|s| !s.is_empty()).unwrap_or_else(|| text("failure_reason"));
+                let final_text = text("text");
+                if !final_text.trim().is_empty() {
+                    let active = self.active_bot.clone();
+                    self.set_bot_preview(&active, &final_text);
+                }
+                self.on_turn_finished(&status, &final_text, &error);
+                return Some(status == "complete");
+            }
+            "error" => {
+                let live = self.live_session.clone();
+                self.mark_finished(&live);
+                self.streaming = false;
+                if self.backstage {
+                    // Out of sight: the error waits in that bot's chat.
+                    self.on_turn_finished("error", "", &text("message"));
+                } else {
+                    self.error = text("message");
+                }
+                return Some(false);
+            }
+            _ => {}
+        }
+        None
     }
 
     // ── servers ──
@@ -940,16 +1030,54 @@ impl AppState {
         if self.active_group.is_some() {
             self.leave_group();
             if self.active_bot == name {
-                self.open_bot_chat(cx);
+                // Its chat stayed loaded behind the group.
+                cx.emit(AppEvent::TranscriptLoaded);
+                cx.notify();
                 return;
             }
+        }
+        if self.active_bot == name {
+            return;
         }
         if let Some(server_id) = self.config.active_server.clone() {
             self.config.last_bot.insert(server_id, name.to_string());
             self.save_config();
         }
+        self.park_active();
+        self.show_bot(name, cx);
+    }
+
+    /// Makes `name` the open bot: its loaded chat comes back as it was,
+    /// one not loaded yet opens. Whatever was open must be parked already.
+    pub(super) fn show_bot(&mut self, name: &str, cx: &mut Context<Self>) {
         self.active_bot = name.to_string();
-        self.open_bot_chat(cx);
+        match self.unpark(name) {
+            Some(stale) => {
+                self.refresh_bot_extras(cx);
+                cx.emit(AppEvent::TranscriptLoaded);
+                if self.live_session.is_empty() && !self.chat_loading {
+                    // No Bot Chat yet, or its load failed: look again.
+                    self.chat_loading = self.gateway.is_some();
+                    self.spawn_open(name.to_string(), cx);
+                } else if stale {
+                    self.recheck_chat(cx);
+                }
+                cx.notify();
+            }
+            None => self.open_bot_chat(cx),
+        }
+    }
+
+    /// The open bot's side things: jobs, screen and models.
+    pub(super) fn refresh_bot_extras(&mut self, cx: &mut Context<Self>) {
+        self.jobs.clear();
+        self.jobs_error.clear();
+        self.refresh_jobs(cx);
+        self.screen = Value::Null;
+        self.screen_log.clear();
+        self.refresh_screen(cx);
+        self.models.clear();
+        self.refresh_models(cx);
     }
 
     /// Shows `text` as a bot's last message in the sidebar.
@@ -978,16 +1106,19 @@ impl AppState {
         // The chat's own command set adds its workspace's skills.
         let (profile, live) = (self.active_bot.clone(), self.live_session.clone());
         self.refresh_commands(&profile, &live);
-        match view {
+        let loaded = match view {
             Some(rows) if !rows.is_empty() => {
                 self.load_transcript(rows);
-                cx.emit(AppEvent::TranscriptLoaded);
+                true
             }
             _ if !opened.messages.is_empty() => {
                 self.load_transcript(transcript_for_view(&opened.messages));
-                cx.emit(AppEvent::TranscriptLoaded);
+                true
             }
-            _ => {}
+            _ => false,
+        };
+        if loaded && !self.backstage {
+            cx.emit(AppEvent::TranscriptLoaded);
         }
         let live = self.live_session.clone();
         if opened.running || self.running.contains_key(&live) {
@@ -1001,33 +1132,32 @@ impl AppState {
     /// Opens the active bot's Bot Chat. A bot that has none yet shows an empty
     /// chat; the Bot Chat is created when the first message is sent.
     fn open_bot_chat(&mut self, cx: &mut Context<Self>) {
-        // A running turn carries on in the background; reopening the bot
-        // picks it back up.
         self.streaming = false;
         self.clear_chat();
         cx.emit(AppEvent::TranscriptLoaded);
-        self.jobs.clear();
-        self.jobs_error.clear();
-        self.refresh_jobs(cx);
-        self.screen = Value::Null;
-        self.screen_log.clear();
-        self.refresh_screen(cx);
+        self.refresh_bot_extras(cx);
         self.session_info = Value::Null;
         self.usage = None;
-        self.models.clear();
-        self.refresh_models(cx);
         self.pending.clear();
-        let Some(gateway) = self.gateway.clone() else {
+        if self.gateway.is_none() {
             self.chat_loading = false;
             cx.notify();
             return;
-        };
+        }
         self.chat_loading = true;
         let profile = self.active_bot.clone();
         // The profile's commands, for the menu before the chat exists.
         if !self.catalogs.contains_key(&profile) {
             self.refresh_commands(&profile, "");
         }
+        self.spawn_open(profile, cx);
+        cx.notify();
+    }
+
+    /// Looks up `profile`'s Bot Chat and resumes it into that bot's chat,
+    /// open or parked.
+    pub(super) fn spawn_open(&mut self, profile: String, _cx: &mut Context<Self>) {
+        let Some(gateway) = self.gateway.clone() else { return };
         let roster = self.roster_chats.get(&profile).cloned();
         let generation = self.generation;
         let queue = self.queue.clone();
@@ -1049,19 +1179,22 @@ impl AppState {
             }
             .await;
             queue.queue(move |app, cx| {
-                if app.generation != generation || app.active_bot != profile {
+                if app.generation != generation {
                     return;
                 }
-                app.chat_loading = false;
-                match result {
-                    Ok(Some((opened, view))) => app.apply_opened(opened, view, cx),
-                    Ok(None) => {}
-                    Err(e) => app.error = e,
-                }
+                app.with_bot_chat(&profile, cx, |app, cx| {
+                    app.chat_loading = false;
+                    match result {
+                        Ok(Some((opened, view))) => app.apply_opened(opened, view, cx),
+                        Ok(None) => {}
+                        // Out of sight, a failed load is tried again when the bot is opened.
+                        Err(_) if app.backstage => {}
+                        Err(e) => app.error = e,
+                    }
+                });
                 cx.notify();
             });
         });
-        cx.notify();
     }
 
     pub fn send(&mut self, text: &str, cx: &mut Context<Self>) {
@@ -1121,18 +1254,17 @@ impl AppState {
                             return;
                         }
                         app.mark_running(&opened.live, &profile);
-                        // Switched to another bot meanwhile: the turn runs on
-                        // unseen, and shows when this bot is reopened.
-                        if app.active_bot != profile {
-                            return;
-                        }
-                        // The chat already existed (made elsewhere meanwhile): show
-                        // its history, then this message again below it.
-                        let had_history = !opened.messages.is_empty();
-                        app.apply_opened(opened, None, cx);
-                        if had_history {
-                            app.on_user_message(&echo, echo_files);
-                        }
+                        // Switched to another bot meanwhile: its parked chat
+                        // takes the session.
+                        app.with_bot_chat(&profile, cx, |app, cx| {
+                            // The chat already existed (made elsewhere meanwhile): show
+                            // its history, then this message again below it.
+                            let had_history = !opened.messages.is_empty();
+                            app.apply_opened(opened, None, cx);
+                            if had_history {
+                                app.on_user_message(&echo, echo_files);
+                            }
+                        });
                         cx.notify();
                     });
                     live
@@ -1158,8 +1290,8 @@ impl AppState {
                 if let Some(row_id) = submitted.get("user_row_id").and_then(Value::as_i64) {
                     let live = live.clone();
                     queue.queue(move |app, cx| {
-                        if app.generation == generation && app.live_session == live {
-                            app.on_user_row_id(row_id);
+                        if app.generation == generation {
+                            app.with_live_chat(&live, cx, |app, _| app.on_user_row_id(row_id));
                             cx.notify();
                         }
                     });
@@ -1171,9 +1303,7 @@ impl AppState {
                 queue.queue(move |app, cx| {
                     if app.generation == generation {
                         app.mark_finished(&sent_on);
-                        if app.active_bot == profile {
-                            app.streaming = false;
-                        }
+                        app.with_bot_chat(&profile, cx, |app, _| app.streaming = false);
                         app.error = e;
                         cx.notify();
                     }
@@ -1294,7 +1424,13 @@ impl AppState {
             queue.park();
             return;
         }
-        if let Some(message) = queue.next() {
+        let Some(message) = queue.next() else { return };
+        if self.parked.contains_key(bot) {
+            // Its parked chat shows the message going out.
+            self.with_bot_chat(bot, cx, |app, cx| {
+                app.submit_with(message.text.clone(), message.text, message.attachments, true, cx)
+            });
+        } else {
             self.submit_in_background(bot, live, message);
         }
     }
@@ -1428,20 +1564,18 @@ impl AppState {
                 if app.generation != generation {
                     return;
                 }
-                let open = app.live_session == live;
                 match result {
-                    Ok(reply) if open => {
-                        app.rebind_row_ids(&plan, &reply);
-                        if let Some(id) = reply.get("user_row_id").and_then(Value::as_i64) {
-                            app.on_user_row_id(id);
-                        }
+                    Ok(reply) => {
+                        app.with_live_chat(&live, cx, |app, _| {
+                            app.rebind_row_ids(&plan, &reply);
+                            if let Some(id) = reply.get("user_row_id").and_then(Value::as_i64) {
+                                app.on_user_row_id(id);
+                            }
+                        });
                     }
-                    Ok(_) => {}
                     Err(e) => {
                         app.mark_finished(&live);
-                        if open {
-                            app.streaming = false;
-                        }
+                        app.with_live_chat(&live, cx, |app, _| app.streaming = false);
                         app.error = e;
                     }
                 }
@@ -2037,6 +2171,8 @@ mod tests {
 
 #[cfg(test)]
 mod transcript_tests;
+#[cfg(test)]
+mod slots_tests;
 #[cfg(test)]
 mod queue_tests;
 #[cfg(test)]

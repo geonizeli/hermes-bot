@@ -153,7 +153,7 @@ impl AppState {
                 }
                 cx.emit(AppEvent::EditSaved(result));
                 // Even a partial save changes what the roster shows.
-                app.refresh_bots(cx);
+                app.refresh_bots_with(true, cx);
             });
         });
     }
