@@ -1,6 +1,25 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
-  <rect width="64" height="64" rx="14" fill="#FFD60A"/>
-  <path d="M16 20a6 6 0 0 1 6-6h20a6 6 0 0 1 6 6v14a6 6 0 0 1-6 6H30l-8 8v-8a6 6 0 0 1-6-6z" fill="#111"/>
-  <circle cx="26" cy="27" r="2.6" fill="#FFD60A"/>
-  <circle cx="38" cy="27" r="2.6" fill="#FFD60A"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="Hermes Bot">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1a1a1d"/>
+      <stop offset="1" stop-color="#0b0b0d"/>
+    </linearGradient>
+    <linearGradient id="face" x1="0.25" y1="0.15" x2="0.75" y2="0.95">
+      <stop offset="0" stop-color="#FFE566"/>
+      <stop offset="1" stop-color="#F5C400"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#000" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#bg)"/>
+  <rect x="1" y="1" width="126" height="126" rx="27" fill="none" stroke="#2e2e32" stroke-width="1"/>
+  <!-- Bot squircle (same silhouette as in-app classic faces) -->
+  <g filter="url(#shadow)">
+    <path fill="url(#face)" d="M64.00 27.12 L68.72 27.12 L73.58 27.13 L78.72 27.18 L84.25 27.42 L90.07 28.24 L95.57 30.36 L99.64 34.43 L101.76 39.93 L102.58 45.75 L102.82 51.28 L102.87 56.42 L102.88 61.28 L102.88 66.00 L102.88 70.72 L102.87 75.58 L102.82 80.72 L102.58 86.25 L101.76 92.07 L99.64 97.57 L95.57 101.64 L90.07 103.76 L84.25 104.58 L78.72 104.82 L73.58 104.87 L68.72 104.88 L64.00 104.88 L59.28 104.88 L54.42 104.87 L49.28 104.82 L43.75 104.58 L37.93 103.76 L32.43 101.64 L28.36 97.57 L26.24 92.07 L25.42 86.25 L25.18 80.72 L25.13 75.58 L25.12 70.72 L25.12 66.00 L25.12 61.28 L25.13 56.42 L25.18 51.28 L25.42 45.75 L26.24 39.93 L28.36 34.43 L32.43 30.36 L37.93 28.24 L43.75 27.42 L49.28 27.18 L54.42 27.13 L59.28 27.12 Z"/>
+  </g>
+  <ellipse cx="52.96" cy="59.28" rx="5.2" ry="5.4" fill="rgba(0,0,0,0.82)"/>
+  <ellipse cx="75.04" cy="59.28" rx="5.2" ry="5.4" fill="rgba(0,0,0,0.82)"/>
+  <circle cx="51.5" cy="57.9" r="1.5" fill="rgba(255,255,255,0.85)"/>
+  <circle cx="73.6" cy="57.9" r="1.5" fill="rgba(255,255,255,0.85)"/>
 </svg>
