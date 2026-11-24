@@ -1,0 +1,105 @@
+#!/bin/sh
+# Builds a portable x86_64 AppImage into dist/ (Hermes_Bot-<version>-<arch>.AppImage).
+# Reuses the release binary from bin/build and the desktop/icon from pkgbuild/.
+#
+# Runtime: Vulkan, Mesa, and libxcb come from the host (standard AppImage policy).
+# The image bundles the input/key libraries the binary links directly.
+#
+# Optional: export HERMES_BOT_APPIMAGE_TOOLS to cache downloaded linuxdeploy tools.
+set -eu
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+cd "$ROOT"
+
+case "$(uname -m)" in
+  x86_64) ARCH=x86_64 ;;
+  aarch64) ARCH=aarch64 ;;
+  *)
+    echo "bin/appimage: unsupported CPU architecture: $(uname -m)" >&2
+    exit 1
+    ;;
+esac
+
+VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml)"
+if [ -z "$VERSION" ]; then
+  echo "bin/appimage: could not read version from Cargo.toml" >&2
+  exit 1
+fi
+
+OUTPUT="${ROOT}/dist/Hermes_Bot-${VERSION}-${ARCH}.AppImage"
+APPDIR="${ROOT}/build/AppDir"
+TOOLS_DIR="${HERMES_BOT_APPIMAGE_TOOLS:-${ROOT}/build/appimage-tools}"
+LIBDIR="/usr/lib/${ARCH}-linux-gnu"
+if [ ! -d "$LIBDIR" ]; then
+  LIBDIR="/lib/${ARCH}-linux-gnu"
+fi
+
+mkdir -p "$TOOLS_DIR" "${ROOT}/dist"
+"$ROOT/bin/build"
+
+LINUXDEPLOY="${TOOLS_DIR}/linuxdeploy-${ARCH}.AppImage"
+PLUGIN="${TOOLS_DIR}/linuxdeploy-plugin-appimage-${ARCH}.AppImage"
+LINUXDEPLOY_URL="https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-${ARCH}.AppImage"
+PLUGIN_URL="https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-${ARCH}.AppImage"
+
+fetch() {
+  url="$1"
+  dest="$2"
+  if [ -f "$dest" ]; then
+    return 0
+  fi
+  echo "Downloading ${url##*/}..."
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL -o "$dest" "$url"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q -O "$dest" "$url"
+  else
+    echo "bin/appimage: need curl or wget to fetch linuxdeploy" >&2
+    exit 1
+  fi
+}
+
+if [ ! -x "$LINUXDEPLOY" ]; then
+  fetch "$LINUXDEPLOY_URL" "$LINUXDEPLOY"
+  chmod +x "$LINUXDEPLOY"
+fi
+if [ ! -x "$PLUGIN" ]; then
+  fetch "$PLUGIN_URL" "$PLUGIN"
+  chmod +x "$PLUGIN"
+fi
+
+export LINUXDEPLOY_PLUGIN_DIR="$TOOLS_DIR"
+
+rm -rf "$APPDIR"
+mkdir -p "$APPDIR/usr/bin"
+install -m755 "${ROOT}/target/release/hermes-bot" "$APPDIR/usr/bin/hermes-bot"
+
+ICON="${ROOT}/pkgbuild/hermes-bot.svg"
+if command -v rsvg-convert >/dev/null 2>&1; then
+  ICON_PNG="${ROOT}/build/hermes-bot-256.png"
+  rsvg-convert -w 256 -h 256 -o "$ICON_PNG" "$ICON"
+  ICON="$ICON_PNG"
+fi
+
+export LINUXDEPLOY_OUTPUT_VERSION="$VERSION"
+export ARCH
+export LDAI_OUTPUT="$OUTPUT"
+
+# Explicit libraries for anything dlopened or easy to miss; NEEDED libs are picked up via --executable.
+LIBS=""
+for name in libxkbcommon.so.0 libxkbcommon-x11.so.0; do
+  path="${LIBDIR}/${name}"
+  if [ -f "$path" ]; then
+    LIBS="${LIBS} --library=${path}"
+  fi
+done
+
+# shellcheck disable=SC2086
+"$LINUXDEPLOY" \
+  --appdir "$APPDIR" \
+  --executable "$APPDIR/usr/bin/hermes-bot" \
+  $LIBS \
+  --desktop-file "${ROOT}/pkgbuild/hermes-bot.desktop" \
+  --icon-file "$ICON" \
+  --output appimage
+
+echo "Built $OUTPUT"
