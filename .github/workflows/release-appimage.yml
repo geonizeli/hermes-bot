@@ -1,0 +1,71 @@
+name: Release AppImage
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: AppImage version label (non-release runs)
+        required: false
+        default: ci-test
+
+permissions:
+  contents: write
+
+jobs:
+  appimage:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl \
+            file \
+            patchelf \
+            zsync \
+            libvulkan-dev \
+            vulkan-tools \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libxcb1-dev \
+            libwayland-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            librsvg2-bin
+
+      - name: Derive version
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            tag="${{ github.event.release.tag_name }}"
+            version="${tag#v}"
+          elif [ -n "${{ inputs.version }}" ]; then
+            version="${{ inputs.version }}"
+          else
+            version="ci-${GITHUB_SHA::7}"
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "Using version $version (event: ${{ github.event_name }})"
+
+      - name: Build AppImage
+        run: VERSION="$VERSION" ./bin/appimage
+
+      - name: Upload AppImage to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/Hermes_Bot-*.AppImage
+
+      - name: Upload AppImage artifact (non-release test)
+        if: github.event_name != 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hermes_Bot-AppImage-${{ env.VERSION }}
+          path: dist/Hermes_Bot-*.AppImage
+          retention-days: 5
