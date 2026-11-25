@@ -19,9 +19,9 @@ case "$(uname -m)" in
     ;;
 esac
 
-VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml)"
+VERSION="${VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml)}"
 if [ -z "$VERSION" ]; then
-  echo "bin/appimage: could not read version from Cargo.toml" >&2
+  echo "bin/appimage: set VERSION or add version to Cargo.toml" >&2
   exit 1
 fi
 
@@ -75,7 +75,7 @@ install -m755 "${ROOT}/target/release/hermes-bot" "$APPDIR/usr/bin/hermes-bot"
 
 ICON="${ROOT}/pkgbuild/hermes-bot.svg"
 if command -v rsvg-convert >/dev/null 2>&1; then
-  ICON_PNG="${ROOT}/build/hermes-bot-256.png"
+  ICON_PNG="${ROOT}/build/hermes-bot.png"
   rsvg-convert -w 256 -h 256 -o "$ICON_PNG" "$ICON"
   ICON="$ICON_PNG"
 fi
@@ -94,7 +94,7 @@ for name in libxkbcommon.so.0 libxkbcommon-x11.so.0; do
 done
 
 # shellcheck disable=SC2086
-"$LINUXDEPLOY" \
+APPIMAGE_EXTRACT_AND_RUN=1 "$LINUXDEPLOY" \
   --appdir "$APPDIR" \
   --executable "$APPDIR/usr/bin/hermes-bot" \
   $LIBS \
