@@ -295,6 +295,9 @@ impl AppState {
     /// The app's state from the saved config, connecting to the active server.
     pub fn new(cx: &mut Context<Self>) -> Self {
         let path = store::config_path();
+        if let Err(e) = store::migrate_legacy_tokens() {
+            eprintln!("hermes-bot: couldn't move sign-ins to the keyring: {e}");
+        }
         let (config, error) = match store::load(&path) {
             Ok(config) => (config, String::new()),
             Err(e) => (Config::default(), e),
