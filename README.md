@@ -18,8 +18,10 @@ Needs `rust`. At run time: Vulkan (`vulkan-icd-loader` and a driver),
 `libxkbcommon`, `wayland` (or X11), `fontconfig`.
 
 Optional, used when present:
-- a Secret Service keyring (GNOME Keyring, KWallet, KeePassXC) to stay signed
-  in between runs; without one, sign-ins last until the app quits;
+- a Secret Service keyring (GNOME Keyring, KWallet, KeePassXC). Bearer tokens
+  are stored there, not in `servers.json`. On startup any legacy plain
+  `tokens.json` is moved into the keyring and removed. Without a keyring,
+  sign-ins last until the app quits;
 - `xdg-desktop-portal` with a backend for the file chooser, or `zenity` /
   `kdialog`; files can always be dropped or pasted into the chat.
 

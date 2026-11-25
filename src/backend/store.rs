@@ -71,12 +71,22 @@ impl Config {
     }
 }
 
-pub fn config_path() -> PathBuf {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
+fn config_dir() -> PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config"));
-    base.join("hermes-bot/servers.json")
+        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config"))
+        .join("hermes-bot")
+}
+
+pub fn config_path() -> PathBuf {
+    config_dir().join("servers.json")
+}
+
+/// Older builds kept bearer tokens here as plain JSON; they are moved into the
+/// system keyring on startup (see `migrate_legacy_tokens`).
+pub fn legacy_tokens_path() -> PathBuf {
+    config_dir().join("tokens.json")
 }
 
 /// A missing or unreadable file is an empty list; a corrupt one is reported
@@ -175,6 +185,26 @@ pub fn load_tokens(server_id: &str) -> Option<Tokens> {
     serde_json::from_str(&secret).ok()
 }
 
+/// Moves sign-ins out of a plain `tokens.json` into the Secret Service keyring.
+pub fn migrate_legacy_tokens() -> Result<(), String> {
+    migrate_legacy_tokens_at(&legacy_tokens_path())
+}
+
+fn migrate_legacy_tokens_at(path: &Path) -> Result<(), String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("Can't read {}: {e}", path.display())),
+    };
+    let map: HashMap<String, Tokens> =
+        serde_json::from_str(&text).map_err(|e| format!("{} is not valid: {e}", path.display()))?;
+    for (id, tokens) in map {
+        save_tokens(&id, &tokens)?;
+    }
+    std::fs::remove_file(&path).map_err(|e| format!("Can't remove {}: {e}", path.display()))?;
+    Ok(())
+}
+
 /// Stores a sign-in in the keyring, or in memory when there's no keyring
 /// (see `is_in_memory`).
 pub fn save_tokens(server_id: &str, tokens: &Tokens) -> Result<(), String> {
@@ -183,13 +213,17 @@ pub fn save_tokens(server_id: &str, tokens: &Tokens) -> Result<(), String> {
     Ok(())
 }
 
-/// `keyring` stores the secret for good; when it fails the secret is kept
-/// for this run. Once a server's sign-in is in memory it stays there, so a
-/// refreshed token doesn't land in a keyring that holds an older one.
+/// Prefers the system keyring on every write so an unlocked keyring mid-session
+/// picks up refreshed tokens; when the keyring is unavailable, keeps this run
+/// alive in memory only.
 fn save_secret(server_id: &str, json: String, keyring: impl FnOnce(&str) -> Result<(), String>) {
-    let held = in_memory(|m| m.contains_key(server_id));
-    if held || keyring(&json).is_err() {
-        in_memory(|m| m.insert(server_id.to_string(), json));
+    match keyring(&json) {
+        Ok(()) => in_memory(|m| {
+            m.remove(server_id);
+        }),
+        Err(_) => in_memory(|m| {
+            m.insert(server_id.to_string(), json);
+        }),
     }
 }
 
@@ -222,12 +256,41 @@ mod tests {
 
         save_secret("no-keyring", "b".into(), |_| Err("no Secret Service".into()));
         assert!(is_in_memory("no-keyring"));
-        // Later refreshes stay in memory too, even if a keyring appears.
-        save_secret("no-keyring", "c".into(), |_| panic!("the keyring isn't asked again"));
+        save_secret("no-keyring", "c".into(), |_| Err("no Secret Service".into()));
         assert_eq!(in_memory(|m| m.get("no-keyring").cloned()).as_deref(), Some("c"));
 
         delete_tokens("no-keyring");
         assert!(!is_in_memory("no-keyring"));
+    }
+
+    #[test]
+    fn promotes_sign_ins_into_the_keyring_when_it_becomes_available() {
+        save_secret("promote", "a".into(), |_| Err("locked".into()));
+        assert!(is_in_memory("promote"));
+        save_secret("promote", "b".into(), |json| {
+            assert_eq!(json, "b");
+            Ok(())
+        });
+        assert!(!is_in_memory("promote"));
+    }
+
+    #[test]
+    fn migrates_plain_json_tokens_into_the_keyring() {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy = dir.path().join("tokens.json");
+        let tokens = Tokens {
+            access_token: "a".into(),
+            refresh_token: "r".into(),
+            expires_at: 1,
+            provider: "basic".into(),
+        };
+        let on_disk: HashMap<String, Tokens> = HashMap::from([("srv".into(), tokens)]);
+        std::fs::write(&legacy, serde_json::to_string(&on_disk).unwrap()).unwrap();
+        migrate_legacy_tokens_at(&legacy).unwrap();
+        assert!(!legacy.exists());
+        let loaded = load_tokens("srv").expect("migrated tokens load");
+        assert_eq!(loaded.access_token, "a");
+        delete_tokens("srv");
     }
 
     #[test]
