@@ -1,6 +1,7 @@
-//! Files and images attached to a message: picking (xdg portal), pasting
-//! (the clipboard, read by the bridge), uploading to the Bot Chat, and the
-//! `@image:` / `@file:` references Hermes keeps in the transcript.
+//! Files and images attached to a message: picking (NSOpenPanel on macOS,
+//! xdg portal / zenity / kdialog on Linux), pasting (the clipboard, read by
+//! the bridge), uploading to the Bot Chat, and the `@image:` / `@file:`
+//! references Hermes keeps in the transcript.
 //!
 //! A remote dashboard has no multipart upload route, so everything travels as
 //! bytes over the chat socket: images through `image.attach_bytes` (queued
@@ -241,15 +242,21 @@ enum Wanted {
     Image,
 }
 
+#[cfg(not(target_os = "macos"))]
 const IMAGE_MIMES: [&str; 5] = ["image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp"];
+#[cfg(not(target_os = "macos"))]
 const IMAGE_GLOBS: &str = "*.png *.jpg *.jpeg *.webp *.gif *.bmp";
 
+/// Image extensions for the macOS file dialog filter.
+#[cfg(target_os = "macos")]
+const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp", "gif", "bmp"];
+
 /// Shown when no file chooser can open at all.
+#[cfg(not(target_os = "macos"))]
 const NO_CHOOSER: &str = "No file chooser is available. Install xdg-desktop-portal with a backend \
      (xdg-desktop-portal-gtk, -gnome or -kde), or zenity. You can also drop or paste files into the chat.";
 
-/// Opens the desktop's file chooser: the xdg portal, or zenity or kdialog
-/// where there's no portal. Several files.
+/// Opens the desktop's file chooser. Several files.
 pub async fn pick_files() -> Result<Vec<PathBuf>, String> {
     pick(Wanted::Files, "Attach files").await
 }
@@ -259,6 +266,28 @@ pub async fn pick_image() -> Result<Option<PathBuf>, String> {
     Ok(pick(Wanted::Image, "Choose a picture").await?.into_iter().next())
 }
 
+#[cfg(target_os = "macos")]
+async fn pick(wanted: Wanted, title: &str) -> Result<Vec<PathBuf>, String> {
+    let mut dialog = rfd::AsyncFileDialog::new().set_title(title);
+    if wanted == Wanted::Image {
+        dialog = dialog.add_filter("Images", IMAGE_EXTENSIONS);
+    }
+    let paths = match wanted {
+        Wanted::Files => dialog
+            .pick_files()
+            .await
+            .map(|files| files.into_iter().map(|f| f.path().to_path_buf()).collect())
+            .unwrap_or_default(),
+        Wanted::Image => dialog
+            .pick_file()
+            .await
+            .map(|f| vec![f.path().to_path_buf()])
+            .unwrap_or_default(),
+    };
+    Ok(paths)
+}
+
+#[cfg(not(target_os = "macos"))]
 async fn pick(wanted: Wanted, title: &str) -> Result<Vec<PathBuf>, String> {
     match pick_with_portal(wanted, title).await {
         Ok(files) => Ok(files),
@@ -270,6 +299,7 @@ async fn pick(wanted: Wanted, title: &str) -> Result<Vec<PathBuf>, String> {
 }
 
 /// The xdg portal's chooser. Cancelling is an empty pick, not an error.
+#[cfg(not(target_os = "macos"))]
 async fn pick_with_portal(wanted: Wanted, title: &str) -> Result<Vec<PathBuf>, String> {
     use ashpd::desktop::file_chooser::{FileFilter, SelectedFiles};
     let mut request = SelectedFiles::open_file().title(title).modal(true).multiple(wanted == Wanted::Files);
@@ -285,6 +315,7 @@ async fn pick_with_portal(wanted: Wanted, title: &str) -> Result<Vec<PathBuf>, S
 }
 
 /// zenity, then kdialog. `None` when neither is installed.
+#[cfg(not(target_os = "macos"))]
 async fn pick_with_dialog_tool(wanted: Wanted, title: &str) -> Option<Result<Vec<PathBuf>, String>> {
     for (program, args) in [("zenity", zenity_args(wanted, title)), ("kdialog", kdialog_args(wanted, title))] {
         let output = match tokio::process::Command::new(program).args(&args).output().await {
@@ -303,6 +334,7 @@ async fn pick_with_dialog_tool(wanted: Wanted, title: &str) -> Option<Result<Vec
     None
 }
 
+#[cfg(not(target_os = "macos"))]
 fn zenity_args(wanted: Wanted, title: &str) -> Vec<String> {
     let mut args = vec!["--file-selection".to_string(), format!("--title={title}")];
     match wanted {
@@ -312,6 +344,7 @@ fn zenity_args(wanted: Wanted, title: &str) -> Vec<String> {
     args
 }
 
+#[cfg(not(target_os = "macos"))]
 fn kdialog_args(wanted: Wanted, title: &str) -> Vec<String> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
     let mut args = vec!["--title".to_string(), title.to_string(), "--getopenfilename".to_string(), home];
@@ -323,6 +356,7 @@ fn kdialog_args(wanted: Wanted, title: &str) -> Vec<String> {
 }
 
 /// The chosen paths, one per line.
+#[cfg(not(target_os = "macos"))]
 fn dialog_paths(stdout: &str) -> Vec<PathBuf> {
     stdout.lines().map(str::trim).filter(|l| !l.is_empty()).map(PathBuf::from).collect()
 }
@@ -339,12 +373,14 @@ mod tests {
         assert_eq!(image_extension(b"hello"), None);
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn reads_dialog_tool_picks() {
         assert_eq!(dialog_paths("/tmp/a b.png\n/home/me/x.txt\n\n"), vec![PathBuf::from("/tmp/a b.png"), PathBuf::from("/home/me/x.txt")]);
         assert!(dialog_paths("").is_empty());
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn asks_dialog_tools_for_the_right_files() {
         let zenity = zenity_args(Wanted::Files, "Attach files");
@@ -354,6 +390,14 @@ mod tests {
         assert_eq!(kdialog[..3], ["--title".to_string(), "Pick".to_string(), "--getopenfilename".to_string()]);
         assert!(kdialog.last().unwrap().starts_with("Images (*.png"));
         assert!(!kdialog.contains(&"--multiple".to_string()));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_image_filter_lists_common_formats() {
+        assert!(IMAGE_EXTENSIONS.contains(&"png"));
+        assert!(IMAGE_EXTENSIONS.contains(&"jpeg"));
+        assert!(!IMAGE_EXTENSIONS.iter().any(|e| e.contains('*')));
     }
 
     #[test]
