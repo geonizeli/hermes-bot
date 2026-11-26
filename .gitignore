@@ -1,6 +1,9 @@
 /target/
 /build/
 /dist/
+/macos-dist/
+/.cargo-home/
+/.rustup-home/
 /pkgbuild/pkg/
 /pkgbuild/src/
 *.pkg.tar.*

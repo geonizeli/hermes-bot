@@ -1,0 +1,31 @@
+#!/bin/sh
+# Builds the AppImage and installs it to ~/.local/bin/hermes-bot.
+set -eu
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+"$ROOT/bin/build-for-appimage"
+
+VERSION="${VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/Cargo.toml")}"
+case "$(uname -m)" in
+  x86_64) ARCH=x86_64 ;;
+  aarch64) ARCH=aarch64 ;;
+  *)
+    echo "bin/install-for-appimage: unsupported CPU architecture: $(uname -m)" >&2
+    exit 1
+    ;;
+esac
+
+APPIMAGE="${ROOT}/dist/Hermes_Bot-${VERSION}-${ARCH}.AppImage"
+if [ ! -f "$APPIMAGE" ]; then
+  # Fallback: newest AppImage in dist/
+  APPIMAGE="$(ls -t "$ROOT"/dist/Hermes_Bot-*.AppImage 2>/dev/null | head -1 || true)"
+fi
+if [ -z "$APPIMAGE" ] || [ ! -f "$APPIMAGE" ]; then
+  echo "bin/install-for-appimage: no AppImage found in dist/" >&2
+  exit 1
+fi
+
+DEST_DIR="${HOME}/.local/bin"
+mkdir -p "$DEST_DIR"
+install -m755 "$APPIMAGE" "${DEST_DIR}/hermes-bot"
+echo "Installed ${DEST_DIR}/hermes-bot"
+echo "Ensure ${DEST_DIR} is on your PATH, then run: hermes-bot"

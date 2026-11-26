@@ -54,7 +54,7 @@ jobs:
           echo "Using version $version (event: ${{ github.event_name }})"
 
       - name: Build AppImage
-        run: VERSION="$VERSION" ./bin/appimage
+        run: VERSION="$VERSION" ./bin/build-for-appimage
 
       - name: Upload AppImage to release
         if: github.event_name == 'release'
