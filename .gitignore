@@ -4,6 +4,7 @@
 /macos-dist/
 /.cargo-home/
 /.rustup-home/
+/.tools/
 /pkgbuild/pkg/
 /pkgbuild/src/
 *.pkg.tar.*
