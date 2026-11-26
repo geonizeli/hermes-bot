@@ -1,0 +1,42 @@
+#!/bin/sh
+# Builds the macOS app and installs CLI + .app for the current user.
+set -eu
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+case "$(uname -s)" in
+  Darwin) ;;
+  *)
+    echo "bin/install-for-macos: must run on macOS" >&2
+    exit 1
+    ;;
+esac
+
+"$ROOT/bin/build-for-macos"
+
+DIST="${ROOT}/macos-dist"
+APP_SRC="${DIST}/Hermes Bot.app"
+BIN_SRC="${DIST}/hermes-bot"
+
+mkdir -p "${HOME}/bin" "${HOME}/Applications"
+install -m755 "$BIN_SRC" "${HOME}/bin/hermes-bot"
+rm -rf "${HOME}/Applications/Hermes Bot.app"
+cp -R "$APP_SRC" "${HOME}/Applications/Hermes Bot.app"
+
+if [ -f "${HOME}/.zshrc" ]; then
+  if ! grep -q 'HOME/bin' "${HOME}/.zshrc" 2>/dev/null; then
+    printf '\n# hermes-bot\nexport PATH="$HOME/bin:$PATH"\n' >> "${HOME}/.zshrc"
+  fi
+elif [ -f "${HOME}/.bashrc" ]; then
+  if ! grep -q 'HOME/bin' "${HOME}/.bashrc" 2>/dev/null; then
+    printf '\n# hermes-bot\nexport PATH="$HOME/bin:$PATH"\n' >> "${HOME}/.bashrc"
+  fi
+fi
+
+LSREG="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+if [ -x "$LSREG" ]; then
+  "$LSREG" -f "${HOME}/Applications/Hermes Bot.app" >/dev/null 2>&1 || true
+fi
+
+echo "Installed ${HOME}/bin/hermes-bot"
+echo "Installed ${HOME}/Applications/Hermes Bot.app"
+echo "Open Spotlight for Hermes Bot, or run: hermes-bot"

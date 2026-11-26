@@ -1,0 +1,104 @@
+#!/bin/sh
+# Builds a macOS app bundle into macos-dist/Hermes Bot.app (and a bare binary).
+set -eu
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+cd "$ROOT"
+
+case "$(uname -s)" in
+  Darwin) ;;
+  *)
+    echo "bin/build-for-macos: must run on macOS" >&2
+    exit 1
+    ;;
+esac
+
+"$ROOT/bin/build"
+
+DIST="${ROOT}/macos-dist"
+APP="${DIST}/Hermes Bot.app"
+BINARY="${ROOT}/target/release/hermes-bot"
+ICON_PNG="${ROOT}/pkgbuild/hermes-bot-icon.png"
+
+rm -rf "$DIST"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+
+install -m755 "$BINARY" "$DIST/hermes-bot"
+install -m755 "$BINARY" "$APP/Contents/MacOS/hermes-bot"
+
+if [ -f "$ICON_PNG" ]; then
+  cp "$ICON_PNG" "$APP/Contents/Resources/hermes-bot.png"
+  # Best-effort .icns; sips/iconutil are optional for a usable bundle.
+  if command -v sips >/dev/null 2>&1 && command -v iconutil >/dev/null 2>&1; then
+    ICONSET="${DIST}/hermes-bot.iconset"
+    mkdir -p "$ICONSET"
+    at='@'
+    for spec in \
+      "16:icon_16x16.png" \
+      "32:icon_16x16${at}2x.png" \
+      "32:icon_32x32.png" \
+      "64:icon_32x32${at}2x.png" \
+      "128:icon_128x128.png" \
+      "256:icon_128x128${at}2x.png" \
+      "256:icon_256x256.png" \
+      "512:icon_256x256${at}2x.png" \
+      "512:icon_512x512.png" \
+      "1024:icon_512x512${at}2x.png"
+    do
+      px="${spec%%:*}"
+      name="${spec#*:}"
+      tmp="${DIST}/_icon_${px}.png"
+      sips -s format png -z "$px" "$px" "$ICON_PNG" --out "$tmp" >/dev/null
+      cp "$tmp" "$ICONSET/$name"
+      rm -f "$tmp"
+    done
+    if iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/hermes-bot.icns" 2>/dev/null; then
+      :
+    fi
+    rm -rf "$ICONSET"
+  fi
+fi
+
+VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml)"
+cat > "$APP/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleExecutable</key>
+  <string>hermes-bot</string>
+  <key>CFBundleIdentifier</key>
+  <string>dev.hermes.bot</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>Hermes Bot</string>
+  <key>CFBundleDisplayName</key>
+  <string>Hermes Bot</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>${VERSION:-0.1.0}</string>
+  <key>CFBundleVersion</key>
+  <string>${VERSION:-0.1.0}</string>
+  <key>CFBundleIconFile</key>
+  <string>hermes-bot</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>13.0</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSSupportsAutomaticGraphicsSwitching</key>
+  <true/>
+</dict>
+</plist>
+PLIST
+
+printf 'APPL????' > "$APP/Contents/PkgInfo"
+
+if command -v codesign >/dev/null 2>&1; then
+  codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
+fi
+
+echo "Built $DIST/hermes-bot"
+echo "Built $APP"

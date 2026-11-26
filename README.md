@@ -8,10 +8,16 @@ Rust core, GPUI interface. See [PLAN.md](PLAN.md) for scope and milestones.
 ## Develop
 
 ```sh
-bin/build     # release build into target/release/hermes-bot
-bin/appimage  # portable AppImage in dist/ (needs curl or wget; Vulkan/GPU from the host)
-bin/test      # cargo test
-bin/install   # build and install the pacman package (shows in the launcher)
+bin/build                 # release binary into target/release/hermes-bot
+bin/test                  # cargo test
+
+bin/build-for-archlinux   # pacman package under pkgbuild/
+bin/build-for-appimage    # portable AppImage in dist/ (curl/wget; Vulkan/GPU from host)
+bin/build-for-macos       # .app + binary in macos-dist/
+
+bin/install-for-archlinux # build and install the pacman package (launcher)
+bin/install-for-appimage  # build AppImage and install to ~/.local/bin/hermes-bot
+bin/install-for-macos     # build and install to ~/Applications + ~/bin
 ```
 
 Needs `rust`. At run time: Vulkan (`vulkan-icd-loader` and a driver),

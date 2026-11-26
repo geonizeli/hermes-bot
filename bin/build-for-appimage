@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds a portable x86_64 AppImage into dist/ (Hermes_Bot-<version>-<arch>.AppImage).
+# Builds a portable AppImage into dist/ (Hermes_Bot-<version>-<arch>.AppImage).
 # Reuses the release binary from bin/build and the desktop/icon from pkgbuild/.
 #
 # Runtime: Vulkan, Mesa, and libxcb come from the host (standard AppImage policy).
@@ -14,14 +14,14 @@ case "$(uname -m)" in
   x86_64) ARCH=x86_64 ;;
   aarch64) ARCH=aarch64 ;;
   *)
-    echo "bin/appimage: unsupported CPU architecture: $(uname -m)" >&2
+    echo "bin/build-for-appimage: unsupported CPU architecture: $(uname -m)" >&2
     exit 1
     ;;
 esac
 
 VERSION="${VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml)}"
 if [ -z "$VERSION" ]; then
-  echo "bin/appimage: set VERSION or add version to Cargo.toml" >&2
+  echo "bin/build-for-appimage: set VERSION or add version to Cargo.toml" >&2
   exit 1
 fi
 
@@ -53,7 +53,7 @@ fetch() {
   elif command -v wget >/dev/null 2>&1; then
     wget -q -O "$dest" "$url"
   else
-    echo "bin/appimage: need curl or wget to fetch linuxdeploy" >&2
+    echo "bin/build-for-appimage: need curl or wget to fetch linuxdeploy" >&2
     exit 1
   fi
 }
@@ -73,11 +73,14 @@ rm -rf "$APPDIR"
 mkdir -p "$APPDIR/usr/bin"
 install -m755 "${ROOT}/target/release/hermes-bot" "$APPDIR/usr/bin/hermes-bot"
 
-ICON="${ROOT}/pkgbuild/hermes-bot.svg"
-if command -v rsvg-convert >/dev/null 2>&1; then
-  ICON_PNG="${ROOT}/build/hermes-bot.png"
-  rsvg-convert -w 256 -h 256 -o "$ICON_PNG" "$ICON"
-  ICON="$ICON_PNG"
+ICON="${ROOT}/pkgbuild/hermes-bot-icon.png"
+if [ ! -f "$ICON" ] && [ -f "${ROOT}/pkgbuild/hermes-bot.svg" ]; then
+  ICON="${ROOT}/pkgbuild/hermes-bot.svg"
+  if command -v rsvg-convert >/dev/null 2>&1; then
+    ICON_PNG="${ROOT}/build/hermes-bot.png"
+    rsvg-convert -w 256 -h 256 -o "$ICON_PNG" "$ICON"
+    ICON="$ICON_PNG"
+  fi
 fi
 
 export LINUXDEPLOY_OUTPUT_VERSION="$VERSION"

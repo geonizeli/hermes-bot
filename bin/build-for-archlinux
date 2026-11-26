@@ -1,0 +1,7 @@
+#!/bin/sh
+# Builds the Arch Linux pacman package under pkgbuild/ (does not install).
+# Requires makepkg. The package binary is produced via PKGBUILD → bin/build.
+set -eu
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+cd "$ROOT/pkgbuild"
+exec makepkg -f "$@"

@@ -103,7 +103,7 @@ src/ui/                 GPUI views
   screen.rs             live screen view and input forwarding
   dialogs.rs            servers, bot questions, expensive-model confirmation
   edit_bot.rs           Edit Bot dialog and pet picker
-bin/build bin/test bin/install
+bin/build bin/test bin/build-for-* bin/install-for-*
 pkgbuild/PKGBUILD .desktop .svg
 ```
 
@@ -128,4 +128,4 @@ November 2026; the milestones below date from then.
 5. Streaming conversation view (Markdown, reasoning, tools, stop).
 6. Composer extras: model and effort pickers, attachments.
 7. Approval and clarify cards, reconnect and replay.
-8. Polish: i18n, screenshot, README, `bin/install`.
+8. Polish: i18n, screenshot, README, `bin/install-for-*`.
