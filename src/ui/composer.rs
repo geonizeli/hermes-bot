@@ -584,23 +584,22 @@ impl Render for Composer {
         });
 
         let action_button = {
-            let ink = if live { c.accent_foreground } else { c.muted };
+            let ink = if live { c.primary_on } else { c.muted };
             ident("send")
-                .size(px(36.))
+                .size(px(34.))
                 .flex_none()
                 .rounded_full()
                 .flex()
                 .items_center()
                 .justify_center()
-                .when(live, |d| d.cursor_pointer().hover(|s| s.opacity(0.85)).on_click(cx.listener(|this, _, window, cx| this.send(window, cx))))
+                .when(live, |d| d.cursor_pointer().hover(|s| s.opacity(0.88)).on_click(cx.listener(|this, _, window, cx| this.send(window, cx))))
                 .child(if stopping {
-                    div().size(px(12.)).rounded(px(2.)).bg(c.accent_foreground).into_any_element()
+                    div().size(px(12.)).rounded(px(2.)).bg(c.primary_on).into_any_element()
                 } else {
                     div().text_size(px(18.)).font_weight(FontWeight::BOLD).text_color(ink).child("↑").into_any_element()
                 })
-                // Lights up as soon as there's something to send.
                 .with_spring("send-live", SpringAnimation::new(motion::settle()).to(live), {
-                    let (off, on) = (c.border, c.accent);
+                    let (off, on) = (c.raised, c.primary_fill);
                     move |d, p| d.bg(p.interpolate_clamped(off, on))
                 })
         };
@@ -660,7 +659,7 @@ impl Render for Composer {
             .flex()
             .flex_col()
             .gap(px(6.))
-            .rounded(c.radius)
+            .rounded(c.island_radius)
             .bg(c.raised)
             .border_1()
             .capture_action(cx.listener(|this, _: &MoveUp, window, cx| {
@@ -700,7 +699,7 @@ impl Render for Composer {
             .when_some(self.effort_menu.as_ref(), |d, menu| d.child(menu.render(close_effort.clone(), cx)))
             // The border warms to the accent while you type.
             .with_spring("composer-focus", SpringAnimation::new(motion::settle()).to(focused), {
-                let (off, on) = (c.border, c.accent.alpha(0.6));
+                let (off, on) = (c.border, c.accent.alpha(0.55));
                 move |d, p| d.border_color(p.interpolate_clamped(off, on))
             })
     }

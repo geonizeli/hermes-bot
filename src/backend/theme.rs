@@ -45,16 +45,16 @@ impl Default for Palette {
 }
 
 impl Palette {
-    /// The built-in dark theme: neutral greys and the icon's yellow.
+    /// The built-in dark theme: warm Grok-like chrome; blue accent; yellow is Omarchy only.
     pub fn dark() -> Self {
         Palette {
-            accent: "#FFD60A".into(),
-            background: "#0e0e10".into(),
-            surface: "#151517".into(),
-            raised: "#1e1e21".into(),
-            foreground: "#e6e6e6".into(),
-            muted: "#8a8a8d".into(),
-            border: "#2a2a2e".into(),
+            accent: "#1084fe".into(),
+            background: "#1e1d1d".into(),
+            surface: "#1e1d1d".into(),
+            raised: "#282726".into(),
+            foreground: "#e6e5e3".into(),
+            muted: "#a8a7a4".into(),
+            border: "#383836".into(),
             danger: "#e5484d".into(),
             red: "#ff6b6b".into(),
             green: "#3fb950".into(),
@@ -70,13 +70,13 @@ impl Palette {
     /// reads as text on white.
     pub fn light() -> Self {
         Palette {
-            accent: "#b07800".into(),
-            background: "#fbfbfa".into(),
-            surface: "#f2f2f0".into(),
-            raised: "#e8e8e5".into(),
-            foreground: "#1d1d1f".into(),
-            muted: "#6b6b70".into(),
-            border: "#d9d9d5".into(),
+            accent: "#1084fe".into(),
+            background: "#f9f8f6".into(),
+            surface: "#f9f8f6".into(),
+            raised: "#eeecea".into(),
+            foreground: "#2c2c2b".into(),
+            muted: "#6b6a66".into(),
+            border: "#d5d4d0".into(),
             danger: "#d1242f".into(),
             red: "#cf222e".into(),
             green: "#1a7f37".into(),

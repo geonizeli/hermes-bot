@@ -3,6 +3,7 @@
 
 use std::rc::Rc;
 
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -27,6 +28,7 @@ pub struct RootView {
     confirm: Option<ConfirmModel>,
     menu: Option<PopupMenu>,
     title: String,
+    bot_search: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -61,7 +63,14 @@ impl RootView {
             GroupView::new(state.clone(), on_menu, window, cx)
         });
         theme::set_appearance(window.appearance(), cx);
+        let bot_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search bots"));
+        let root = cx.entity().downgrade();
         let subscriptions = vec![
+            cx.subscribe_in(&bot_search, window, move |_, _, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Change) {
+                    let _ = root.update(cx, |_, cx| cx.notify());
+                }
+            }),
             cx.observe(&group_dialog, |_, _, cx| cx.notify()),
             // "Match system" follows the desktop's light/dark switch live.
             cx.observe_window_appearance(window, |_, window, cx| theme::set_appearance(window.appearance(), cx)),
@@ -84,7 +93,7 @@ impl RootView {
         if state.read(cx).servers().is_empty() {
             setup.update(cx, |d, cx| d.show(window, cx));
         }
-        RootView { state, chat, setup, request, edit, group, group_dialog, confirm: None, menu: None, title: String::new(), _subscriptions: subscriptions }
+        RootView { state, chat, setup, request, edit, group, group_dialog, confirm: None, menu: None, title: String::new(), bot_search, _subscriptions: subscriptions }
     }
 
     fn close_menu(&self, cx: &mut Context<Self>) -> Action {
@@ -238,7 +247,7 @@ impl RootView {
                         .pb(px(6.))
                         .flex()
                         .items_center()
-                        .child(div().flex_1().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(c.muted).child("GROUPS"))
+                        .child(div().flex_1().text_size(px(12.)).font_weight(FontWeight::MEDIUM).text_color(c.muted).child("Groups"))
                         .when(can_create, |d| {
                             d.child(widgets::glyph_button("new-group", "+", "New group", &c).on_click(move |_, window, cx| {
                                 dialog.update(cx, |d, cx| d.show(Mode::New { picked: Vec::new() }, window, cx));
@@ -253,9 +262,16 @@ impl RootView {
     fn render_sidebar(&self, cx: &mut Context<Self>) -> Div {
         let c = colors(cx).clone();
         let s = self.state.read(cx);
+        let q = self.bot_search.read(cx).value().trim().to_lowercase();
         let rows: Vec<_> = s
             .bots
             .iter()
+            .filter(|bot| {
+                q.is_empty()
+                    || bot.display_name.to_lowercase().contains(&q)
+                    || bot.name.to_lowercase().contains(&q)
+                    || bot.model.to_lowercase().contains(&q)
+            })
             .map(|bot| {
                 let active = bot.name == s.active_bot && s.active_group.is_none();
                 let busy = s.is_busy(&bot.name);
@@ -267,35 +283,19 @@ impl RootView {
                 let (name, edit_name) = (bot.name.clone(), bot.name.clone());
                 let state = self.state.clone();
                 let edit = self.edit.clone();
-                let hover = c.raised.alpha(0.5);
+                let hover = c.wash;
                 ident(id("bot", &bot.name))
                     .relative()
-                    .h(px(60.))
+                    .h(px(40.))
                     .mx(px(8.))
-                    .pl(px(12.))
+                    .pl(px(10.))
                     .pr(px(8.))
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(px(12.))
+                    .gap(px(10.))
                     .rounded(c.radius)
-                    // The highlight fades in under the picked bot while its
-                    // accent bar grows out from the middle.
-                    .when(active, |d| {
-                        d.child(div().absolute().inset_0().rounded(c.radius).bg(c.raised).with_animation(
-                            id("bot-active-bg", &bot.name),
-                            Animation::new(motion::BASE).with_easing(motion::ease_out),
-                            |d, t| d.opacity(t),
-                        ))
-                        .child(div().absolute().left_0().w(px(3.)).bg(c.accent).with_animation(
-                            id("bot-active-bar", &bot.name),
-                            Animation::new(motion::SLOW).with_easing(motion::ease_out),
-                            |d, t| {
-                                let inset = 30. * (1. - t);
-                                d.top(px(inset)).bottom(px(inset))
-                            },
-                        ))
-                    })
+                    .when(active, |d| d.bg(c.wash))
                     .when(!active, |d| {
                         d.hover(move |s| s.bg(hover)).cursor_pointer().on_click(move |_, _, cx| {
                             state.update(cx, |s, cx| s.select_bot(&name, cx));
@@ -314,22 +314,22 @@ impl RootView {
                             cx.notify();
                         }),
                     )
-                    .child(widgets::avatar(&bot.display_name, bot.avatar.clone(), bot.avatar_face, 38.))
+                    .child(widgets::avatar(&bot.display_name, bot.avatar.clone(), bot.avatar_face, 28.))
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
                             .flex()
                             .flex_col()
-                            .gap(px(2.))
+                            .gap(px(1.))
                             .child(
                                 div()
                                     .truncate()
-                                    .text_size(px(15.))
+                                    .text_size(px(14.))
                                     .font_weight(if active { FontWeight::SEMIBOLD } else { FontWeight::MEDIUM })
                                     .child(bot.display_name.clone()),
                             )
-                            .when(!subtitle.is_empty(), |d| d.child(div().truncate().text_size(px(13.)).text_color(c.muted).child(subtitle))),
+                            .when(!subtitle.is_empty(), |d| d.child(div().truncate().text_size(px(12.)).text_color(c.muted).child(subtitle))),
                     )
                     // Pulses while the bot is answering.
                     .when(busy, |d| d.child(widgets::pulse_dot(id("busy", &bot.name), c.accent, 8.)))
@@ -380,19 +380,17 @@ impl RootView {
             .h_full()
             .flex()
             .flex_col()
-            .bg(c.surface)
+            .bg(c.background)
             .border_r_1()
-            .border_color(c.border)
+            .border_color(c.border.alpha(0.7))
             .child(
                 div()
-                    .pl(px(16.))
-                    .pt(px(18.))
+                    .px(px(10.))
+                    .pt(px(14.))
                     .pb(px(8.))
-                    .text_size(px(12.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(c.muted)
-                    .child("BOTS"),
+                    .child(div().rounded(c.radius).bg(c.wash).px(px(10.)).py(px(2.)).child(Input::new(&self.bot_search).appearance(false).text_size(px(14.)))),
             )
+            .child(widgets::section_label("Bots", &c))
             .child(
                 ident("bot-list")
                     .flex_1()

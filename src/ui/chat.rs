@@ -16,12 +16,13 @@ use super::markdown_view;
 use super::motion;
 use super::screen::ScreenView;
 use super::side_panel;
-use super::state::{AppState, Role, Row};
+use super::state::{AppEvent, AppState, Role, Row};
 use super::theme::colors;
 use super::tool_card;
 use super::widgets::{self, ident, accent_surface, id, mono};
 
-pub const SIDEBAR_WIDTH: f32 = 280.;
+pub const SIDEBAR_WIDTH: f32 = 256.;
+pub const CHAT_COLUMN: f32 = 764.;
 const HEADER_HEIGHT: f32 = 56.;
 const PANEL_WIDTH: f32 = 320.;
 
@@ -270,34 +271,62 @@ impl ChatView {
         let c = colors(cx);
         let s = self.state.read(cx);
         let bot = s.active_bot();
-        let title = match bot {
-            Some(b) => b.display_name.clone(),
+        let greeting = match bot {
+            Some(_) => time_greeting().to_string(),
             None if s.connected => "Pick a bot".into(),
             None => "Not connected".into(),
         };
-        let subtitle = match bot {
-            Some(b) if !b.description.is_empty() => b.description.clone(),
-            Some(_) => "Say hello to start your chat.".into(),
-            None => s.status.clone(),
-        };
+        let subtitle = bot.and_then(|b| (!b.description.is_empty()).then(|| b.description.clone()));
+        const STARTERS: &[&str] = &[
+            "What can you help me with?",
+            "Review the latest code changes",
+            "Run the tests and report failures",
+        ];
+        let state = self.state.clone();
         div()
-            .absolute()
-            .inset_0()
             .flex()
+            .flex_col()
             .items_center()
-            .justify_center()
-            .px(px(24.))
-            .child(
-                div()
-                    .w_full()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap(px(10.))
-                    .when_some(bot, |d, b| d.child(widgets::avatar(&b.display_name, b.avatar.clone(), b.avatar_face, 64.)))
-                    .child(div().text_size(px(28.)).font_weight(FontWeight::SEMIBOLD).truncate().child(title))
-                    .child(widgets::muted(subtitle, 15., c).text_center()),
-            )
+            .gap(px(12.))
+            .w_full()
+            .max_w(px(CHAT_COLUMN))
+            .px(px(8.))
+            .child(div().text_size(px(28.)).font_weight(FontWeight::SEMIBOLD).text_center().child(greeting))
+            .when_some(subtitle, |d, sub| d.child(widgets::muted(sub, 15., c).text_center().max_w(px(420.))))
+            .when(bot.is_some(), |d| {
+                d.child(
+                    div()
+                        .w_full()
+                        .mt(px(8.))
+                        .children(STARTERS.iter().enumerate().map(|(i, text)| {
+                            let state = state.clone();
+                            let msg = (*text).to_string();
+                            ident(id("starter", i))
+                                .w_full()
+                                .py(px(11.))
+                                .border_b_1()
+                                .border_color(c.border)
+                                .text_size(px(15.))
+                                .text_color(c.muted)
+                                .cursor_pointer()
+                                .hover(|s| s.text_color(c.foreground))
+                                .on_click(move |_, _, cx| {
+                                    let text = msg.clone();
+                                    state.update(cx, |_, cx| cx.emit(AppEvent::Prefill(text)));
+                                })
+                                .child(*text)
+                        })),
+                )
+            })
+    }
+}
+
+fn time_greeting() -> &'static str {
+    use chrono::Timelike;
+    match Local::now().hour() {
+        h if h < 12 => "Good morning",
+        h if h < 17 => "Good afternoon",
+        _ => "Good evening",
     }
 }
 
@@ -423,9 +452,9 @@ fn render_user(ix: usize, row: &Row, rows: &RowContext, cx: &mut App) -> AnyElem
             .px(px(16.))
             .py(px(11.))
             .rounded(c.radius)
-            .bg(accent_surface(&c))
+            .bg(c.bubble_user)
             .border_1()
-            .border_color(c.accent.alpha(0.3))
+            .border_color(c.border)
             .text_size(px(15.))
             .line_height(relative(1.45))
             .child(markdown_view::plain_text(id("sent-text", row.id), reading_order(row.id), row.text.clone(), cx))
@@ -643,7 +672,12 @@ fn render_row(ix: usize, rows: &RowContext, window: &mut Window, cx: &mut App) -
         .when(last, |d| d.pb(px(24.)))
         .flex()
         .justify_center()
-        .child(motion::rise_in_when(motion::fresh(row.born, motion::SLOW * 2), column, id("row-in", row.id), lift, motion::BASE))
+        .child(
+            div()
+                .w_full()
+                .max_w(px(CHAT_COLUMN))
+                .child(motion::rise_in_when(motion::fresh(row.born, motion::SLOW * 2), column, id("row-in", row.id), lift, motion::BASE)),
+        )
         .into_any_element()
 }
 
@@ -702,13 +736,26 @@ impl Render for ChatView {
             })
         });
 
+        let empty_home = empty && !loading && has_bot;
         let conversation_area = div()
             .relative()
             .flex_1()
             .min_h_0()
-            .when(!loading, |d| d.child(conversation))
+            .flex()
+            .flex_col()
+            .when(!empty_home && !loading, |d| d.child(conversation))
             .when(loading, |d| d.child(loading_transcript(cx)))
-            .when(empty && !loading, |d| d.child(self.render_empty(cx)))
+            .when(empty_home, |d| {
+                d.flex_1()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(20.))
+                    .px(px(24.))
+                    .child(self.render_empty(cx))
+                    .child(div().w_full().max_w(px(CHAT_COLUMN)).child(self.composer.clone()))
+            })
             .children(jump);
 
         // Errors stay until dismissed or the next action clears them.
@@ -739,7 +786,7 @@ impl Render for ChatView {
             motion::rise_in(bar, "error-in", 8., motion::BASE)
         });
 
-        let composer = connected.then(|| {
+        let composer = (connected && !empty_home).then(|| {
             div()
                 .w_full()
                 .px(px(24.))
@@ -747,7 +794,17 @@ impl Render for ChatView {
                 .pb(px(20.))
                 .flex()
                 .justify_center()
-                .child(div().w_full().child(self.composer.clone()))
+                .child(
+                    div()
+                        .w_full()
+                        .max_w(px(CHAT_COLUMN))
+                        .child(
+                            div()
+                                .w_full()
+                                .pt(px(12.))
+                                .child(self.composer.clone()),
+                        ),
+                )
         });
 
         let chat_area = div()

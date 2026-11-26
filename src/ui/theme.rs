@@ -32,6 +32,14 @@ pub struct Colors {
     pub orange: Hsla,
     /// Hyprland's rounding under Hyprland, otherwise the theme's.
     pub radius: Pixels,
+    /// Composer island corners (Grok uses ~22px; at least theme radius).
+    pub island_radius: Pixels,
+    /// Send and other primary actions (foreground on dark, not accent yellow).
+    pub primary_fill: Hsla,
+    pub primary_on: Hsla,
+    /// Row hover and user message wash.
+    pub wash: Hsla,
+    pub bubble_user: Hsla,
     /// The same palette as strings, for the Markdown renderer.
     pub markdown: markdown::Colors,
 }
@@ -67,6 +75,19 @@ impl Colors {
             cyan: hex(&p.cyan),
             orange: hex(&p.orange),
             radius: px(radius.max(0) as f32),
+            island_radius: px((radius.max(0) as f32 + 12.).max(22.)),
+            primary_fill: hex(&p.foreground),
+            primary_on: hex(&p.background),
+            wash: {
+                let bg = hex(&p.background);
+                let fg = hex(&p.foreground);
+                tint(bg, fg, if bg.l < 0.5 { 0.08 } else { 0.05 })
+            },
+            bubble_user: {
+                let bg = hex(&p.background);
+                let fg = hex(&p.foreground);
+                tint(bg, fg, if bg.l < 0.5 { 0.1 } else { 0.07 })
+            },
             markdown: markdown::Colors {
                 foreground: p.foreground.clone(),
                 muted: p.muted.clone(),
@@ -139,8 +160,6 @@ fn sync_kit(c: &Colors, cx: &mut App) {
         t.link = c.blue;
         t.colors.list = c.surface;
         t.list_hover = c.raised;
-        t.list_active = c.accent.alpha(0.18);
-        t.list_active_border = c.accent.alpha(0.6);
         t.scrollbar = transparent_black();
         t.scrollbar_thumb = c.muted.alpha(0.35);
         t.scrollbar_thumb_hover = c.muted.alpha(0.6);
@@ -148,10 +167,12 @@ fn sync_kit(c: &Colors, cx: &mut App) {
         t.button_hover = tint(c.raised, c.foreground, 0.06);
         t.button_active = tint(c.raised, c.foreground, 0.1);
         t.button_foreground = c.foreground;
-        t.button_primary = c.accent;
-        t.button_primary_hover = c.accent.opacity(0.9);
-        t.button_primary_active = c.accent.opacity(0.8);
-        t.button_primary_foreground = c.accent_foreground;
+        t.button_primary = c.primary_fill;
+        t.button_primary_hover = c.primary_fill.opacity(0.92);
+        t.button_primary_active = c.primary_fill.opacity(0.85);
+        t.button_primary_foreground = c.primary_on;
+        t.list_active = c.wash;
+        t.list_active_border = transparent_black();
     });
 }
 

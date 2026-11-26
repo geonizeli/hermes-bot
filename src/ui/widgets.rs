@@ -11,7 +11,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::motion;
-use super::theme::{Colors, colors, tint};
+use super::theme::{Colors, colors};
 
 /// An identified element. Test builds register it so headless UI tests can
 /// find and click it; elsewhere this is a plain `ident(key)`.
@@ -91,7 +91,7 @@ pub fn pulse_dot(key: impl Into<ElementId>, color: Hsla, size: f32) -> impl Into
 /// A small rounded control (the composer's model and effort pickers).
 pub fn chip(key: impl Into<ElementId>, text: impl Into<SharedString>, active: bool, c: &Colors) -> Ident {
     let (bg, border, fg) = if active {
-        (c.accent.alpha(0.18), c.accent.alpha(0.6), c.foreground)
+        (c.wash, c.border, c.foreground)
     } else {
         (transparent_black(), c.border, c.muted)
     };
@@ -324,7 +324,25 @@ pub fn muted(text: impl Into<SharedString>, size: f32, c: &Colors) -> Div {
     div().text_size(px(size)).text_color(c.muted).child(text.into())
 }
 
-/// A raised surface tinted towards the accent (your messages).
+/// User message fill (soft wash, not accent-tinted).
+pub fn user_bubble_bg(c: &Colors) -> Hsla {
+    c.bubble_user
+}
+
+/// Editor surfaces still call this name.
 pub fn accent_surface(c: &Colors) -> Hsla {
-    tint(c.raised, c.accent, 0.14)
+    c.bubble_user
+}
+
+/// Sidebar / history section label.
+pub fn section_label(text: impl Into<SharedString>, c: &Colors) -> impl IntoElement {
+    div()
+        .pl(px(10.))
+        .pr(px(8.))
+        .pt(px(14.))
+        .pb(px(6.))
+        .text_size(px(12.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(c.muted)
+        .child(text.into())
 }

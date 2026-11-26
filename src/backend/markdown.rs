@@ -38,7 +38,7 @@ impl Default for Colors {
         Colors {
             foreground: "#e6e6e6".into(),
             muted: "#8a8a8d".into(),
-            accent: "#FFD60A".into(),
+            accent: "#1084fe".into(),
             surface: "#151517".into(),
             border: "#2a2a2e".into(),
             red: "#ff6b6b".into(),
