@@ -643,6 +643,16 @@ mod tests {
     }
 
     #[test]
+    fn turns_non_image_media_tags_into_download_links() {
+        let blocks = render("Done.\nMEDIA:/srv/out/report.pdf\n", &Colors::default());
+        let Block::Text(paras) = &blocks[0] else { panic!("{blocks:?}") };
+        let para = paras.last().unwrap();
+        let link = para.spans.iter().find(|s| s.link.is_some()).expect("file link");
+        assert_eq!(link.link.as_deref(), Some("hermes-media:/srv/out/report.pdf"));
+        assert!(span_text(para, link).contains("report.pdf"));
+    }
+
+    #[test]
     fn renders_alerts_and_keeps_html_as_text() {
         let blocks = render("> [!WARNING]\n> careful <b>\n\n<script>", &Colors::default());
         let Block::Alert { kind, paras } = &blocks[0] else { panic!("{blocks:?}") };

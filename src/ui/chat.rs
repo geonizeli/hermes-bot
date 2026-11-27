@@ -375,7 +375,11 @@ fn render_user(ix: usize, row: &Row, rows: &RowContext, cx: &mut App) -> AnyElem
                 if f.is_image() {
                     markdown_view::remote_image(id("sent-img", format!("{}-{i}", row.id)), &f.path, &f.url, 240., 180., state, cx)
                 } else {
-                    div()
+                    let local = (!f.path.is_empty()).then(|| f.path.clone());
+                    let name = f.name.clone();
+                    let open = (!f.url.is_empty()).then(|| f.url.clone());
+                    let st = state.clone();
+                    let mut chip = ident(id("sent-file", format!("{}-{i}", row.id)))
                         .h(px(34.))
                         .px(px(12.))
                         .flex()
@@ -387,8 +391,18 @@ fn render_user(ix: usize, row: &Row, rows: &RowContext, cx: &mut App) -> AnyElem
                         .border_color(c.border)
                         .text_size(px(12.))
                         .child("📄")
-                        .child(f.name.clone())
-                        .into_any_element()
+                        .child(f.name.clone());
+                    if local.is_some() || open.is_some() {
+                        chip = chip.cursor_pointer().on_click(move |_, _, cx| match &local {
+                            Some(path) => st.update(cx, |s, cx| s.save_media(path, &name, cx)),
+                            None => {
+                                if let Some(url) = &open {
+                                    cx.open_url(url);
+                                }
+                            }
+                        });
+                    }
+                    chip.into_any_element()
                 }
             })
             .collect();

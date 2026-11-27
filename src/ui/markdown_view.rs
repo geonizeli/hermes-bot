@@ -63,12 +63,12 @@ fn highlights(spans: &[Span], c: &Colors) -> Vec<(std::ops::Range<usize>, Highli
         .collect()
 }
 
-/// Opens a link: web links in the browser, server files fetched first.
+/// Opens a link: web links in the browser, server files saved locally first.
 fn open_link(link: &str, state: &Entity<AppState>, cx: &mut App) {
     match link.strip_prefix("hermes-media:") {
         Some(path) => {
-            let path = path.to_string();
-            state.update(cx, |s, cx| s.open_media(&path, cx));
+            let name = path.rsplit('/').next().unwrap_or(path).to_string();
+            state.update(cx, |s, cx| s.save_media(path, &name, cx));
         }
         None => cx.open_url(link),
     }
@@ -304,9 +304,18 @@ pub fn remote_image(
     };
     let Some((source, open, (w, h))) = source else { return placeholder() };
     let fallback = placeholder.clone();
+    let server_path = (!path.is_empty()).then(|| path.to_string());
+    let state_for_click = state.clone();
     ident(key)
         .cursor_pointer()
-        .on_click(move |_, _, cx| cx.open_url(&open))
+        .on_click(move |_, _, cx| {
+            if let Some(path) = &server_path {
+                let name = path.rsplit('/').next().unwrap_or(path).to_string();
+                state_for_click.update(cx, |s, cx| s.save_media(path, &name, cx));
+            } else {
+                cx.open_url(&open);
+            }
+        })
         .child(
             img(source)
                 .w(px(w))
