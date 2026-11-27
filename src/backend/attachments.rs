@@ -266,6 +266,100 @@ pub async fn pick_image() -> Result<Option<PathBuf>, String> {
     Ok(pick(Wanted::Image, "Choose a picture").await?.into_iter().next())
 }
 
+/// Where to save a file from the server. `None` when cancelled.
+pub async fn pick_save_location(name: &str) -> Result<Option<PathBuf>, String> {
+    let title = "Save file";
+    let suggested = name.trim();
+    let suggested = if suggested.is_empty() { "download" } else { suggested };
+    pick_save(title, suggested).await
+}
+
+#[cfg(target_os = "macos")]
+async fn pick_save(title: &str, suggested: &str) -> Result<Option<PathBuf>, String> {
+    Ok(rfd::AsyncFileDialog::new()
+        .set_title(title)
+        .set_file_name(suggested)
+        .save_file()
+        .await
+        .map(|f| f.path().to_path_buf()))
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn pick_save(title: &str, suggested: &str) -> Result<Option<PathBuf>, String> {
+    match save_with_portal(title, suggested).await {
+        Ok(path) => Ok(path),
+        Err(portal_error) => match save_with_dialog_tool(title, suggested).await {
+            Some(result) => result,
+            None => Err(format!("{NO_CHOOSER} ({portal_error})")),
+        },
+    }
+}
+
+/// The xdg portal's save dialog. Cancelling is `None`, not an error.
+#[cfg(not(target_os = "macos"))]
+async fn save_with_portal(title: &str, suggested: &str) -> Result<Option<PathBuf>, String> {
+    use ashpd::desktop::file_chooser::SelectedFiles;
+    let request = SelectedFiles::save_file()
+        .title(title)
+        .modal(true)
+        .current_name(suggested)
+        .send()
+        .await
+        .map_err(|e| format!("portal: {e}"))?;
+    match request.response() {
+        Ok(files) => Ok(files.uris().first().and_then(|u| path_from_url(u.as_str()))),
+        Err(ashpd::Error::Response(_)) => Ok(None),
+        Err(e) => Err(format!("portal: {e}")),
+    }
+}
+
+/// zenity, then kdialog. `None` when neither is installed.
+#[cfg(not(target_os = "macos"))]
+async fn save_with_dialog_tool(title: &str, suggested: &str) -> Option<Result<Option<PathBuf>, String>> {
+    for (program, args) in [("zenity", zenity_save_args(title, suggested)), ("kdialog", kdialog_save_args(title, suggested))] {
+        let output = match tokio::process::Command::new(program).args(&args).output().await {
+            Ok(output) => output,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Some(Err(format!("Couldn't open the save dialog ({program}): {e}"))),
+        };
+        return Some(match output.status.code() {
+            Some(0) => {
+                let picked = String::from_utf8_lossy(&output.stdout).into_owned();
+                let path = picked.trim();
+                if path.is_empty() { Ok(None) } else { Ok(Some(PathBuf::from(path))) }
+            }
+            Some(1) => Ok(None),
+            _ => Err(format!(
+                "The save dialog ({program}) failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )),
+        });
+    }
+    None
+}
+
+#[cfg(not(target_os = "macos"))]
+fn zenity_save_args(title: &str, suggested: &str) -> Vec<String> {
+    vec![
+        "--file-selection".to_string(),
+        "--save".to_string(),
+        "--confirm-overwrite".to_string(),
+        format!("--title={title}"),
+        format!("--filename={suggested}"),
+    ]
+}
+
+#[cfg(not(target_os = "macos"))]
+fn kdialog_save_args(title: &str, suggested: &str) -> Vec<String> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+    vec![
+        "--title".to_string(),
+        title.to_string(),
+        "--getsavefilename".to_string(),
+        format!("{home}/{suggested}"),
+    ]
+}
+
 #[cfg(target_os = "macos")]
 async fn pick(wanted: Wanted, title: &str) -> Result<Vec<PathBuf>, String> {
     let mut dialog = rfd::AsyncFileDialog::new().set_title(title);
@@ -378,6 +472,17 @@ mod tests {
     fn reads_dialog_tool_picks() {
         assert_eq!(dialog_paths("/tmp/a b.png\n/home/me/x.txt\n\n"), vec![PathBuf::from("/tmp/a b.png"), PathBuf::from("/home/me/x.txt")]);
         assert!(dialog_paths("").is_empty());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn asks_dialog_tools_for_the_right_save_path() {
+        let zenity = zenity_save_args("Save file", "report.pdf");
+        assert!(zenity.contains(&"--save".to_string()));
+        assert!(zenity.iter().any(|a| a == "--filename=report.pdf"));
+        let kdialog = kdialog_save_args("Save file", "notes.txt");
+        assert_eq!(kdialog[..3], ["--title".to_string(), "Save file".to_string(), "--getsavefilename".to_string()]);
+        assert!(kdialog.last().unwrap().ends_with("/notes.txt"));
     }
 
     #[cfg(not(target_os = "macos"))]

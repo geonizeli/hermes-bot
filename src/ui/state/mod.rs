@@ -1762,25 +1762,41 @@ impl AppState {
         cx.notify();
     }
 
-    /// Fetches a server-side file if needed and opens it with the desktop.
-    pub fn open_media(&mut self, path: &str, cx: &mut Context<Self>) {
-        if let Some(MediaState::Ready(file)) = self.media.get(path) {
-            let _ = open::that_detached(file);
+    /// Fetches a server-side file if needed and saves it through a save dialog.
+    pub fn save_media(&mut self, path: &str, name: &str, cx: &mut Context<Self>) {
+        let Some(session) = session::current() else {
+            self.set_error("Not connected.", cx);
             return;
-        }
-        let Some(session) = session::current() else { return };
+        };
+        let suggested = if name.trim().is_empty() {
+            path.rsplit('/').next().unwrap_or("download").to_string()
+        } else {
+            name.to_string()
+        };
         let profile = self.active_bot.clone();
         let queue = self.queue.clone();
         let path = path.to_string();
         runtime().spawn(async move {
-            let result = media::fetch(&session, &path, &profile).await;
+            let fetched = media::fetch(&session, &path, &profile).await;
+            let saved: Result<Option<(PathBuf, PathBuf)>, String> = async {
+                let cached = fetched?;
+                let dest = attachments::pick_save_location(&suggested).await?;
+                let Some(dest) = dest else { return Ok(None) };
+                if let Some(parent) = dest.parent() {
+                    tokio::fs::create_dir_all(parent).await.map_err(|e| format!("Couldn't create {}: {e}", parent.display()))?;
+                }
+                tokio::fs::copy(&cached, &dest).await.map_err(|e| format!("Couldn't save {}: {e}", dest.display()))?;
+                Ok(Some((cached, dest)))
+            }
+            .await;
             queue.queue(move |app, cx| {
-                match result {
-                    Ok(file) => {
-                        let _ = open::that_detached(&file);
-                        app.media.insert(path, MediaState::Ready(file));
+                match saved {
+                    Ok(Some((cached, dest))) => {
+                        app.media.insert(path, MediaState::Ready(cached));
+                        let _ = open::that_detached(&dest);
                     }
-                    Err(e) => app.error = format!("Couldn't open {path}: {e}"),
+                    Ok(None) => {}
+                    Err(e) => app.set_error(e, cx),
                 }
                 cx.notify();
             });
